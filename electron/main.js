@@ -2,6 +2,7 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 
 // Création d'un système simple de log :
 const log = require('electron-log');
@@ -56,8 +57,62 @@ ipcMain.handle('system:getInfo', async () => {
 
 // Gestion de la détection des dossiers de fichier temporaire
 ipcMain.handle('scan:getTempDirs', async () => {
-  const tempDirs = [ os.tmpdir(), path.resolve('C:\\Windows\\Temp') ];
-  return { ok: true, data: tempDirs };
+  // Liste de dossiers temporaires possiblement présents sur le système (à vérifier)
+  const tempDirs = [ 
+    os.tmpdir(),
+    path.join(process.env.SystemRoot, 'Temp'),
+    path.join(process.env.SystemRoot, 'Logs'),
+    path.join(process.env.SystemRoot, 'System32', 'LogFiles'),
+    path.join(process.env.SystemRoot, 'Minidump'),
+    path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Windows', 'WER'),
+    path.join(process.env.SystemRoot, 'SoftwareDistribution', 'Download'),
+    path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Windows', 'INetCache'),
+    path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'User Data', 'Default', 'Cache'),
+    path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'User Data', 'Default', 'Cache'),
+    path.join(process.env.LOCALAPPDATA, 'Mozilla', 'Firefox', 'Profiles'),
+    path.join(process.env.LOCALAPPDATA, 'Discord', 'Cache'),
+    path.join(process.env.APPDATA, 'Spotify', 'Browser', 'Cache'),
+    path.join(process.env.APPDATA, 'Code', 'Cache'),
+    path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Teams', 'Cache'),
+  ];
+
+  // Vérification de l'existence des dossiers
+  const existingTempDirs = []; // Tableau pour stocker les dossiers existants (en tant qu'objets)
+  let counter = 0;
+  for( dir in tempDirs ) {
+    if(fs.existsSync(tempDirs[dir])) {
+      // Le dossier existe, on peut lister ses stats
+      const stats = fs.statSync( tempDirs[dir] );
+
+      if( stats.isDirectory() ) { // On s'assure que c'est bien un dossier
+        // On cherche à savoir s'il faut les droits admins ou pas
+        try {
+          fs.accessSync( tempDirs[dir], fs.constants.X_OK | fs.constants.W_OK );
+          existingTempDirs.push( {
+            path: tempDirs[dir],
+            requiresAdmin: false,
+          } );
+          counter++;
+        } catch (err) {
+          existingTempDirs.push( {
+            path: tempDirs[dir],
+            requiresAdmin: true,
+          } );
+        }
+      }
+    }
+  }
+
+  // Fonction ayant pour but de trouver des dossier cache d'application en possédant
+  constCacheSoftwares = () => {
+    const possibleSofwares = [
+      "Discord",
+      "Visual Studio Code",
+      "Spotify"
+    ];
+  }
+
+  return { ok: true, data: existingTempDirs, outOf15: counter };
 });
 
 app.whenReady().then(() => {
