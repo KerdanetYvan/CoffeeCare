@@ -1,73 +1,53 @@
-# React + TypeScript + Vite
+# CoffeeCare
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Application desktop Windows de maintenance PC — nettoyage, réparation et mises à jour système.
 
-Currently, two official plugins are available:
+Construite avec **Electron + React + TypeScript + Vite + Tailwind CSS**.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Fonctionnalités prévues
 
-## React Compiler
+| Module | Description |
+| ------ | ----------- |
+| Dashboard | Vue d'ensemble : OS, CPU, RAM, uptime |
+| Nettoyage | Suppression de fichiers temporaires et caches |
+| Réparation | Diagnostic et correctifs (services, registres, pilotes) |
+| Mises à jour | Pilotes, Windows Update, applications via winget |
+| Paramètres | Thème, langue, télémétrie, chemins personnalisés |
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Prérequis
 
-## Expanding the ESLint configuration
+- Node.js 20+
+- npm 10+
+- Windows 10/11
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Installation
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Développement
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run dev
 ```
+
+Lance Vite (HMR) et Electron en parallèle. Les DevTools s'ouvrent automatiquement en mode dev.
+
+## Build
+
+```bash
+npm run build   # Génère dist/
+npm start       # Lance Electron sur le build
+```
+
+## Stack
+
+- **Electron 38** — runtime desktop
+- **React 19** — UI
+- **TypeScript 5.9** — typage strict
+- **Vite 7** — bundler avec HMR
+- **React Router v7** — navigation (HashRouter pour compatibilité Electron)
+- **Tailwind CSS 3.4** — styles utilitaires
+- **Lucide React** — icônes
+- **electron-log** — logs applicatifs
