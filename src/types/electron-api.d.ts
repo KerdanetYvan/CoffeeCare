@@ -197,7 +197,8 @@ declare global {
       onSwProgress:  (cb: (data: { id: string; status: 'installing' | 'ok' | 'error'; reason?: string; reboot?: 'app' | 'system' }) => void) => void;
       offSwProgress: () => void;
       openLogFile:     (path: string) => Promise<string>;
-      installElevated: (pkg: { id: string; name: string }) => Promise<{ ok: boolean; reason?: string; reboot?: 'app' | 'system' }>;
+      installElevated: (pkg: { id: string; name: string }) => Promise<{ ok: boolean; reason?: string; reboot?: 'app' | 'system'; logFile?: string }>;
+      closeRelatedApp: (pkg: { name: string }) => Promise<{ ok: boolean; processName?: string; reason?: 'not_found' | 'ambiguous' | 'error'; candidates?: string[] }>;
       installDrivers: () => Promise<InstallResult>;
 
       // Réparation

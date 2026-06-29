@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   offSwProgress: ()             => ipcRenderer.removeAllListeners('updates:swProgress'),
   openLogFile:      (p)           => ipcRenderer.invoke('shell:openPath', p),
   installElevated:  (pkg)         => ipcRenderer.invoke('updates:installElevated', pkg),
+  closeRelatedApp:  (pkg)         => ipcRenderer.invoke('updates:closeRelatedApp', pkg),
   installDrivers:         ()    => ipcRenderer.invoke('updates:installDrivers'),
 
   // Réparation

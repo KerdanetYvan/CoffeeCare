@@ -326,6 +326,9 @@ ipcMain.handle('updates:getSoftware', async () => {
     return { ok: false, data: [], error: 'winget (Desktop App Installer) introuvable sur ce système.' };
   }
 
+  // Rafraîchit le cache des sources avant de scanner pour éviter les faux positifs
+  spawnSync(winget, ['source', 'update'], { encoding: 'utf8', timeout: 30_000 });
+
   // --output json n'est pas disponible sur toutes les versions de winget :
   // on parse la sortie tableau, universellement supportée.
   const result = spawnSync(winget, [
@@ -402,6 +405,14 @@ ipcMain.handle('updates:getDrivers', async () => {
 // Codes Windows "succès + redémarrage requis" (partagés entre les deux handlers winget)
 const REBOOT_CODES = new Set([3010, 1641]);
 
+// Retire les lignes de spinner de progression winget (-, \, |, /) et les lignes vides
+function cleanWingetOutput(output) {
+  return output
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(l => l.length > 0 && !/^[-\\|/]$/.test(l));
+}
+
 const WINGET_REASON_PATTERNS = [
   [/fichiers.{0,80}actuellement utilis/i,                   "Fermez l'application, puis réessayez"],
   [/technologie d.installation différente/i,                'Réinstallation manuelle requise'],
@@ -470,6 +481,7 @@ ipcMain.handle('updates:installSoftwareStream', async (event, packages) => {
     const ew = winget.replace(/'/g, "''");
     const ei = id.replace(/'/g, "''");
     const script = [
+      `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`,
       `$out = & '${ew}' upgrade --id '${ei}' --include-unknown --silent --accept-source-agreements --accept-package-agreements --force --disable-interactivity 2>&1`,
       `$code = $LASTEXITCODE`,
       `$out | ForEach-Object { Write-Output $_ }`,
@@ -518,8 +530,9 @@ ipcMain.handle('updates:installSoftwareStream', async (event, packages) => {
       logLines.push(`✓ ${name} (${id}) — Mis à jour${rebootNote}`);
     } else {
       hasErrors = true;
-      const outputSection = captured
-        ? captured.split(/\r?\n/).filter(Boolean).map(l => `  ${l}`).join('\n')
+      const cleaned = cleanWingetOutput(captured);
+      const outputSection = cleaned.length > 0
+        ? cleaned.map(l => `  ${l}`).join('\n')
         : '  (aucune sortie capturée — winget écrit peut-être directement sur la console)';
       logLines.push(`✗ ${name} (${id}) — Échec (code de sortie : ${exitCode})\n${outputSection}`);
     }
@@ -556,18 +569,21 @@ ipcMain.handle('updates:installElevated', async (_, { id, name }) => {
   const qCode  = codeFile.replace(/'/g, "''");
 
   // Script élevé : exécute winget et écrit la sortie + code dans des fichiers temp
+  // [Console]::OutputEncoding évite le mojibake (winget écrit en UTF-8, la console
+  // l'interprète par défaut avec le codepage OEM du système)
   fs.writeFileSync(innerScript, [
+    `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`,
     `$out  = & '${ew}' upgrade --id '${ei}' --include-unknown --silent --accept-source-agreements --accept-package-agreements --force --disable-interactivity 2>&1`,
     `$code = $LASTEXITCODE`,
     `$out  | Out-File '${qOut}'  -Encoding UTF8`,
     `$code | Out-File '${qCode}' -Encoding UTF8`,
   ].join('\n'), 'utf8');
 
-  // Script wrapper : lance le script élevé via UAC
+  // Script wrapper : lance le script élevé via UAC sans fenêtre visible
   // Forme tableau pour -ArgumentList → gère les chemins avec espaces
   fs.writeFileSync(wrapScript, [
     `$inner = '${qInner}'`,
-    `Start-Process powershell -Verb RunAs -Wait -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $inner)`,
+    `Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $inner)`,
   ].join('\n'), 'utf8');
 
   let captured = '';
@@ -607,7 +623,88 @@ ipcMain.handle('updates:installElevated', async (_, { id, name }) => {
 
   log[ok ? 'info' : 'warn'](`[winget-elevated] ${ok ? 'OK' : 'FAIL'} ${id} (exit=${exitCode})\n${captured}`);
 
-  return { ok, reason: ok ? undefined : extractWingetReason(captured, exitCode), reboot };
+  if (!ok) {
+    const logsDir = path.join(app.getPath('userData'), 'logs');
+    if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+    const logFile = path.join(logsDir, `update-${timestamp}.log`);
+    const cleaned = cleanWingetOutput(captured);
+    const lines = [
+      `=== Rapport de mise à jour — ${new Date().toLocaleString('fr-FR')} ===`,
+      '',
+      `✗ ${name} (${id}) — Échec admin (code de sortie : ${exitCode})`,
+      ...(cleaned.length > 0 ? cleaned.map(l => `  ${l}`) : ['  (aucune sortie capturée)']),
+    ];
+    fs.writeFileSync(logFile, lines.join('\n'), 'utf8');
+
+    // On a déjà élevé les droits ici : si le diagnostic générique pointe encore
+    // vers un problème de droits, c'est forcément autre chose (l'installeur a planté,
+    // souvent parce que l'application visée est encore ouverte).
+    let reason = extractWingetReason(captured, exitCode);
+    if (reason === 'Droits administrateur probablement requis') {
+      reason = `Le programme d'installation a planté — fermez complètement ${name} (icône dans la barre des tâches incluse), puis réessayez`;
+    }
+
+    return { ok: false, reason, logFile };
+  }
+
+  return { ok: true, reason: undefined, reboot };
+});
+
+// Mots trop génériques pour servir de signal de correspondance (vendor/suffixes courants)
+const APP_NAME_FILLER_WORDS = new Set([
+  'software', 'application', 'app', 'setup', 'installer', 'update', 'desktop',
+  'client', 'for', 'windows', 'edition', 'inc', 'corp', 'corporation', 'ltd',
+  'llc', 'gmbh', '64-bit', '32-bit', 'x64', 'x86',
+  'studio', // trop générique : "Visual Studio Code", "Android Studio", etc.
+]);
+
+// Recherche heuristique : aucune correspondance fiable entre un id winget et un
+// processus en cours, donc on compare les mots significatifs du nom de paquet
+// à la description/produit des exécutables actifs (FileVersionInfo).
+ipcMain.handle('updates:closeRelatedApp', async (_, { name }) => {
+  const words = (name.match(/[a-zA-Z0-9]+/g) || [])
+    .filter(w => w.length >= 3 && !APP_NAME_FILLER_WORDS.has(w.toLowerCase()));
+
+  if (words.length === 0) return { ok: false, reason: 'not_found' };
+
+  const wordsArg = words.map(w => `'${w.replace(/'/g, "''")}'`).join(',');
+  const script = [
+    `$words = @(${wordsArg}) | ForEach-Object { $_.ToLower() }`,
+    `$candidates = @()`,
+    `foreach ($p in (Get-Process | Where-Object { $_.Id -ne $PID })) {`,
+    `  try { $fvi = $p.MainModule.FileVersionInfo } catch { continue }`,
+    `  $hay = ("$($fvi.FileDescription) $($fvi.ProductName) $($p.ProcessName)").ToLower()`,
+    `  foreach ($w in $words) { if ($hay.Contains($w)) { $candidates += $p; break } }`,
+    `}`,
+    `$distinct = $candidates | Select-Object -ExpandProperty ProcessName -Unique`,
+    `if ($distinct.Count -eq 0) {`,
+    `  Write-Output 'NONE'`,
+    `} elseif ($distinct.Count -gt 1) {`,
+    `  Write-Output ('AMBIGUOUS:' + ($distinct -join ','))`,
+    `} else {`,
+    `  $candidates | Stop-Process -Force -ErrorAction SilentlyContinue`,
+    `  Write-Output ('KILLED:' + $distinct[0])`,
+    `}`,
+  ].join('\n');
+
+  const tmpScript = path.join(os.tmpdir(), `cc_closeapp_${Date.now()}.ps1`);
+  fs.writeFileSync(tmpScript, script, 'utf8');
+
+  try {
+    const out = execFileSync('powershell', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tmpScript,
+    ], { encoding: 'utf8', timeout: 15_000 }).trim();
+
+    if (out.startsWith('KILLED:'))     return { ok: true, processName: out.slice(7) };
+    if (out.startsWith('AMBIGUOUS:'))  return { ok: false, reason: 'ambiguous', candidates: out.slice(10).split(',') };
+    return { ok: false, reason: 'not_found' };
+  } catch (err) {
+    log.warn(`[closeRelatedApp] erreur: ${err.message}`);
+    return { ok: false, reason: 'error' };
+  } finally {
+    try { fs.unlinkSync(tmpScript); } catch { /* best-effort */ }
+  }
 });
 
 ipcMain.handle('updates:installDrivers', async () => {

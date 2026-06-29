@@ -5,7 +5,7 @@ import type { SoftwareUpdate, DriverUpdate, InstallResult } from '../types/elect
 type PagePhase    = 'idle' | 'scanning' | 'results';
 type InstallPhase = 'idle' | 'installing' | 'done';
 type SwStatus = 'installing' | 'ok' | 'error';
-interface SwItem { status: SwStatus; reason?: string; reboot?: 'app' | 'system' }
+interface SwItem { status: SwStatus; reason?: string; reboot?: 'app' | 'system'; closeMsg?: string }
 
 function formatMB(mb: number): string {
   if (mb < 1)    return '< 1 Mo';
@@ -89,6 +89,31 @@ export default function Updates() {
     window.api.offSwProgress();
     setLogFile(result?.logFile ?? null);
     setSwInstall('done');
+  };
+
+  const closeApp = async (pkg: SoftwareUpdate) => {
+    setSwItemStatus(prev => {
+      const next = new Map(prev);
+      const cur = next.get(pkg.id);
+      if (cur) next.set(pkg.id, { ...cur, closeMsg: 'Fermeture en cours…' });
+      return next;
+    });
+
+    const result = await window.api.closeRelatedApp({ name: pkg.name });
+    const closeMsg = result.ok
+      ? `${result.processName} fermé — relancez la mise à jour pour réessayer`
+      : result.reason === 'ambiguous'
+        ? "Plusieurs applications correspondent — fermez-la manuellement puis relancez la mise à jour"
+        : result.reason === 'not_found'
+          ? "Application non trouvée automatiquement — fermez-la manuellement puis relancez la mise à jour"
+          : 'Erreur lors de la fermeture — fermez-la manuellement';
+
+    setSwItemStatus(prev => {
+      const next = new Map(prev);
+      const cur = next.get(pkg.id);
+      if (cur) next.set(pkg.id, { ...cur, closeMsg });
+      return next;
+    });
   };
 
   const installDrivers = async () => {
@@ -258,6 +283,7 @@ export default function Updates() {
                                   e.stopPropagation();
                                   setSwItemStatus(prev => new Map(prev).set(pkg.id, { status: 'installing' }));
                                   const result = await window.api.installElevated({ id: pkg.id, name: pkg.name });
+                                  if (result.logFile) setLogFile(result.logFile);
                                   setSwItemStatus(prev => new Map(prev).set(pkg.id, {
                                     status: result.ok ? 'ok' : 'error',
                                     reason: result.reason,
@@ -268,6 +294,17 @@ export default function Updates() {
                               >
                                 Réessayer en administrateur
                               </button>
+                            )}
+                            {status === 'error' && !item?.closeMsg && item?.reason && /fermez/i.test(item.reason) && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); closeApp(pkg); }}
+                                className="text-xs text-neutral-500 underline underline-offset-2 hover:text-neutral-900 transition-colors mt-0.5"
+                              >
+                                Fermer l'application
+                              </button>
+                            )}
+                            {item?.closeMsg && (
+                              <p className="text-xs text-neutral-500 mt-0.5">{item.closeMsg}</p>
                             )}
                           </div>
                         </div>
