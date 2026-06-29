@@ -38,11 +38,21 @@ export interface TempDir {
   requiresAdmin: boolean;
   sizeBytes: number;
   fileCount: number;
+  lockedByProcess?: string;
 }
 
 export interface ScanResult {
   ok: boolean;
   data: TempDir[];
+  runningApps: string[];
+}
+
+export interface DirCleanResult {
+  path: string;
+  status: 'ok' | 'partial' | 'denied';
+  freedBytes: number;
+  deletedCount: number;
+  errorCount: number;
 }
 
 export interface CleanResult {
@@ -50,6 +60,7 @@ export interface CleanResult {
   freedBytes: number;
   deletedCount: number;
   errorCount: number;
+  dirs: DirCleanResult[];
 }
 
 export interface SoftwareUpdate {
@@ -180,10 +191,14 @@ declare global {
       deleteDirs:         (paths: string[]) => Promise<CleanResult>;
 
       // Mises à jour
-      getSoftwareUpdates: () => Promise<UpdatesListResult<SoftwareUpdate>>;
-      getDriverUpdates:   () => Promise<UpdatesListResult<DriverUpdate>>;
-      installSoftware:    (ids: string[]) => Promise<InstallResult>;
-      installDrivers:     () => Promise<InstallResult>;
+      getSoftwareUpdates:    () => Promise<UpdatesListResult<SoftwareUpdate>>;
+      getDriverUpdates:      () => Promise<UpdatesListResult<DriverUpdate>>;
+      installSoftwareStream: (packages: { id: string; name: string }[]) => Promise<{ logFile: string | null }>;
+      onSwProgress:  (cb: (data: { id: string; status: 'installing' | 'ok' | 'error'; reason?: string; reboot?: 'app' | 'system' }) => void) => void;
+      offSwProgress: () => void;
+      openLogFile:     (path: string) => Promise<string>;
+      installElevated: (pkg: { id: string; name: string }) => Promise<{ ok: boolean; reason?: string; reboot?: 'app' | 'system' }>;
+      installDrivers: () => Promise<InstallResult>;
 
       // Réparation
       getServices:        () => Promise<ServiceScanResult>;

@@ -1,9 +1,11 @@
-﻿import { useState } from 'react';
-import { ScanSearch, Download, CheckSquare, Square, Package, Cpu, AlertCircle } from 'lucide-react';
+import { useState } from 'react';
+import { ScanSearch, Download, CheckSquare, Square, Package, Cpu, AlertCircle, CheckCircle2, XCircle, RefreshCw, Power } from 'lucide-react';
 import type { SoftwareUpdate, DriverUpdate, InstallResult } from '../types/electron-api';
 
 type PagePhase    = 'idle' | 'scanning' | 'results';
 type InstallPhase = 'idle' | 'installing' | 'done';
+type SwStatus = 'installing' | 'ok' | 'error';
+interface SwItem { status: SwStatus; reason?: string; reboot?: 'app' | 'system' }
 
 function formatMB(mb: number): string {
   if (mb < 1)    return '< 1 Mo';
@@ -20,19 +22,23 @@ export default function Updates() {
 
   const [selectedSw, setSelectedSw] = useState<Set<string>>(new Set());
 
-  const [swInstall, setSwInstall] = useState<InstallPhase>('idle');
+  const [swInstall, setSwInstall]       = useState<InstallPhase>('idle');
+  const [swItemStatus, setSwItemStatus] = useState<Map<string, SwItem>>(new Map());
+  const [logFile, setLogFile]           = useState<string | null>(null);
+
   const [drInstall, setDrInstall] = useState<InstallPhase>('idle');
-  const [swResult,  setSwResult]  = useState<InstallResult | null>(null);
   const [drResult,  setDrResult]  = useState<InstallResult | null>(null);
 
   const scan = async () => {
+    window.api.offSwProgress();
     setPage('scanning');
     setSwError(null);
     setDrError(null);
-    setSwResult(null);
-    setDrResult(null);
     setSwInstall('idle');
+    setSwItemStatus(new Map());
+    setLogFile(null);
     setDrInstall('idle');
+    setDrResult(null);
 
     const [sw, dr] = await Promise.all([
       window.api.getSoftwareUpdates(),
@@ -50,11 +56,7 @@ export default function Updates() {
   const toggleSw = (id: string) => {
     setSelectedSw(prev => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
   };
@@ -69,9 +71,23 @@ export default function Updates() {
 
   const installSoftware = async () => {
     if (selectedSw.size === 0) return;
+
+    const packages = swList
+      .filter(p => selectedSw.has(p.id))
+      .map(p => ({ id: p.id, name: p.name }));
+
     setSwInstall('installing');
-    const result = await window.api.installSoftware([...selectedSw]);
-    setSwResult(result);
+    setSwItemStatus(new Map());
+    setLogFile(null);
+
+    window.api.onSwProgress(({ id, status, reason, reboot }) => {
+      setSwItemStatus(prev => new Map(prev).set(id, { status, reason, reboot }));
+    });
+
+    const result = await window.api.installSoftwareStream(packages);
+
+    window.api.offSwProgress();
+    setLogFile(result?.logFile ?? null);
     setSwInstall('done');
   };
 
@@ -82,8 +98,16 @@ export default function Updates() {
     setDrInstall('done');
   };
 
-  const totalSwSelected = selectedSw.size;
   const totalDrMB = drList.reduce((acc, d) => acc + d.sizeMB, 0);
+
+  // Packages affichés : tous en idle, seulement les sélectionnés pendant/après install
+  const visibleSw = swInstall === 'idle'
+    ? swList
+    : swList.filter(p => selectedSw.has(p.id));
+
+  // Compteurs pour le résumé en phase done
+  const okCount  = [...swItemStatus.values()].filter(s => s.status === 'ok').length;
+  const errCount = [...swItemStatus.values()].filter(s => s.status === 'error').length;
 
   return (
     <section className="space-y-6">
@@ -146,21 +170,28 @@ export default function Updates() {
 
             {swList.length > 0 && (
               <>
-                <div className="flex items-center gap-3 pb-2 border-b border-neutral-200">
-                  <button
-                    onClick={toggleAllSw}
-                    className="flex items-center gap-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors"
-                  >
-                    {selectedSw.size === swList.length
-                      ? <CheckSquare className="h-4 w-4 text-neutral-900" />
-                      : <Square className="h-4 w-4" />}
-                    Tout sélectionner
-                  </button>
-                </div>
+                {/* Sélection tout — seulement en idle */}
+                {swInstall === 'idle' && (
+                  <div className="flex items-center gap-3 pb-2 border-b border-neutral-200">
+                    <button
+                      onClick={toggleAllSw}
+                      className="flex items-center gap-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors"
+                    >
+                      {selectedSw.size === swList.length
+                        ? <CheckSquare className="h-4 w-4 text-neutral-900" />
+                        : <Square className="h-4 w-4" />}
+                      Tout sélectionner
+                    </button>
+                  </div>
+                )}
 
                 <ul className="space-y-2">
-                  {swList.map(pkg => {
-                    const isSel = selectedSw.has(pkg.id);
+                  {visibleSw.map(pkg => {
+                    const isSel     = selectedSw.has(pkg.id);
+                    const item      = swItemStatus.get(pkg.id);
+                    const status    = item?.status;
+                    const isPending = swInstall !== 'idle' && !item;
+
                     return (
                       <li
                         key={pkg.id}
@@ -168,41 +199,96 @@ export default function Updates() {
                         className={[
                           'flex items-center gap-4 p-4 border transition-colors',
                           swInstall === 'idle' ? 'cursor-pointer' : 'cursor-default',
-                          isSel
-                            ? 'bg-neutral-900/5 border-neutral-900/30'
-                            : 'bg-white border-neutral-200 opacity-60',
+                          swInstall === 'idle'
+                            ? (isSel ? 'bg-neutral-900/5 border-neutral-900/30' : 'bg-white border-neutral-200 opacity-60')
+                            : 'bg-white border-neutral-200',
                         ].join(' ')}
                       >
-                        <button
-                          onClick={e => { e.stopPropagation(); if (swInstall === 'idle') toggleSw(pkg.id); }}
-                          disabled={swInstall !== 'idle'}
-                          className="flex-shrink-0"
-                        >
-                          {isSel
-                            ? <CheckSquare className="h-5 w-5 text-neutral-900" />
-                            : <Square className="h-5 w-5 text-neutral-400" />}
-                        </button>
+                        {/* Icône gauche */}
+                        {swInstall === 'idle' ? (
+                          <button
+                            onClick={e => { e.stopPropagation(); toggleSw(pkg.id); }}
+                            className="flex-shrink-0"
+                          >
+                            {isSel
+                              ? <CheckSquare className="h-5 w-5 text-neutral-900" />
+                              : <Square className="h-5 w-5 text-neutral-400" />}
+                          </button>
+                        ) : (
+                          <span className="flex-shrink-0 flex items-center justify-center h-5 w-5">
+                            {isPending && (
+                              <span className="h-2 w-2 rounded-full bg-neutral-300" />
+                            )}
+                            {status === 'installing' && (
+                              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-neutral-900" />
+                            )}
+                            {status === 'ok'    && <CheckCircle2 className="h-5 w-5 text-green-500" />}
+                            {status === 'error' && <XCircle      className="h-5 w-5 text-red-500"   />}
+                          </span>
+                        )}
 
+                        {/* Contenu */}
                         <div className="flex-1 min-w-0">
-                          <p className="font-medium text-sm">{pkg.name}</p>
-                          <p className="text-xs text-neutral-400 truncate">{pkg.id}</p>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="font-medium text-sm">{pkg.name}</p>
+                            {status === 'ok' && item?.reboot === 'app' && (
+                              <span className="flex items-center gap-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5">
+                                <RefreshCw className="h-3 w-3" />
+                                Redémarrez le logiciel
+                              </span>
+                            )}
+                            {status === 'ok' && item?.reboot === 'system' && (
+                              <span className="flex items-center gap-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5">
+                                <Power className="h-3 w-3" />
+                                Redémarrez votre PC
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-0.5">
+                            <p className="text-xs text-neutral-400 truncate">
+                              {swInstall === 'idle'    && pkg.id}
+                              {isPending               && 'En attente…'}
+                              {status === 'installing' && 'Installation…'}
+                              {status === 'ok'         && 'Mis à jour'}
+                              {status === 'error'      && (item?.reason ?? 'Échec de la mise à jour')}
+                            </p>
+                            {status === 'error' && item?.reason === 'Droits administrateur probablement requis' && (
+                              <button
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  setSwItemStatus(prev => new Map(prev).set(pkg.id, { status: 'installing' }));
+                                  const result = await window.api.installElevated({ id: pkg.id, name: pkg.name });
+                                  setSwItemStatus(prev => new Map(prev).set(pkg.id, {
+                                    status: result.ok ? 'ok' : 'error',
+                                    reason: result.reason,
+                                    reboot: result.reboot,
+                                  }));
+                                }}
+                                className="text-xs text-neutral-500 underline underline-offset-2 hover:text-neutral-900 transition-colors mt-0.5"
+                              >
+                                Réessayer en administrateur
+                              </button>
+                            )}
+                          </div>
                         </div>
 
+                        {/* Versions */}
                         <div className="text-right flex-shrink-0 text-sm">
                           <span className="text-neutral-400 line-through mr-2">{pkg.currentVersion}</span>
-                          <span className="font-semibold text-green-600">→ {pkg.availableVersion}</span>
+                          <span className="font-semibold">{pkg.availableVersion}</span>
                         </div>
                       </li>
                     );
                   })}
                 </ul>
 
+                {/* Barre d'action */}
                 <div className="flex items-center justify-between pt-2">
                   {swInstall === 'idle' && (
                     <>
                       <p className="text-sm text-neutral-500">
-                        {totalSwSelected > 0
-                          ? `${totalSwSelected} logiciel${totalSwSelected > 1 ? 's' : ''} sélectionné${totalSwSelected > 1 ? 's' : ''}`
+                        {selectedSw.size > 0
+                          ? `${selectedSw.size} logiciel${selectedSw.size > 1 ? 's' : ''} sélectionné${selectedSw.size > 1 ? 's' : ''}`
                           : 'Aucune sélection'}
                       </p>
                       <button
@@ -217,24 +303,30 @@ export default function Updates() {
                   )}
 
                   {swInstall === 'installing' && (
-                    <div className="flex items-center gap-3 w-full">
-                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-neutral-900 flex-shrink-0" />
-                      <p className="text-sm text-neutral-600">
-                        Installation en cours… Acceptez la demande UAC si une fenêtre s'ouvre.
-                      </p>
-                    </div>
+                    <p className="text-sm text-neutral-500">
+                      {[...swItemStatus.values()].filter(s => s.status === 'ok' || s.status === 'error').length} / {selectedSw.size} traité{selectedSw.size > 1 ? 's' : ''}
+                    </p>
                   )}
 
-                  {swInstall === 'done' && swResult && (
-                    <div className={[
-                      'w-full p-3 border text-sm',
-                      swResult.ok
-                        ? 'bg-green-50 border-green-200 text-green-800'
-                        : 'bg-amber-50 border-amber-200 text-amber-800',
-                    ].join(' ')}>
-                      {swResult.ok
-                        ? `✓ ${swResult.installed} logiciel${swResult.installed > 1 ? 's mis à jour' : ' mis à jour'}`
-                        : `⚠ Échec partiel — ${swResult.errors} erreur${swResult.errors > 1 ? 's' : ''}`}
+                  {swInstall === 'done' && (
+                    <div className="flex items-center gap-4">
+                      <p className="text-sm text-neutral-600">
+                        {okCount > 0 && (
+                          <><span className="font-medium">{okCount}</span> mis à jour</>
+                        )}
+                        {okCount > 0 && errCount > 0 && ' · '}
+                        {errCount > 0 && (
+                          <><span className="font-medium">{errCount}</span> échec{errCount > 1 ? 's' : ''}</>
+                        )}
+                      </p>
+                      {logFile && (
+                        <button
+                          onClick={() => window.api.openLogFile(logFile)}
+                          className="text-sm text-neutral-500 underline underline-offset-2 hover:text-neutral-900 transition-colors"
+                        >
+                          Voir le rapport d'erreur
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -306,16 +398,11 @@ export default function Updates() {
                   )}
 
                   {drInstall === 'done' && drResult && (
-                    <div className={[
-                      'w-full p-3 border text-sm',
-                      drResult.ok
-                        ? 'bg-green-50 border-green-200 text-green-800'
-                        : 'bg-amber-50 border-amber-200 text-amber-800',
-                    ].join(' ')}>
+                    <p className="text-sm text-neutral-600">
                       {drResult.ok
-                        ? '✓ Pilotes mis à jour — un redémarrage peut être nécessaire'
-                        : '⚠ Échec de la mise à jour des pilotes'}
-                    </div>
+                        ? 'Pilotes mis à jour — un redémarrage peut être nécessaire'
+                        : 'Échec de la mise à jour des pilotes'}
+                    </p>
                   )}
                 </div>
               </>

@@ -1,6 +1,6 @@
 ﻿import { useState } from 'react';
-import { ShieldAlert, Trash2, ScanSearch, CheckSquare, Square } from 'lucide-react';
-import type { TempDir, CleanResult } from '../types/electron-api';
+import { ShieldAlert, Trash2, ScanSearch, CheckSquare, Square, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
+import type { TempDir, CleanResult, DirCleanResult } from '../types/electron-api';
 
 type Phase = 'idle' | 'scanning' | 'results' | 'cleaning' | 'done';
 
@@ -12,22 +12,27 @@ function formatBytes(bytes: number): string {
 }
 
 export default function Cleaning() {
-  const [phase, setPhase]           = useState<Phase>('idle');
-  const [dirs, setDirs]             = useState<TempDir[]>([]);
-  const [selected, setSelected]     = useState<Set<string>>(new Set());
+  const [phase, setPhase]             = useState<Phase>('idle');
+  const [dirs, setDirs]               = useState<TempDir[]>([]);
+  const [selected, setSelected]       = useState<Set<string>>(new Set());
   const [cleanResult, setCleanResult] = useState<CleanResult | null>(null);
+  const [runningApps, setRunningApps] = useState<string[]>([]);
+  const [showModal, setShowModal]     = useState(false);
+  const [warningApps, setWarningApps] = useState<string[]>([]);
 
   const scan = async () => {
     setPhase('scanning');
     setDirs([]);
     setSelected(new Set());
     setCleanResult(null);
+    setRunningApps([]);
 
     const res = await window.api.getTempDirs();
     const found = res.data.filter(d => d.fileCount > 0);
 
     setDirs(found);
     setSelected(new Set(found.map(d => d.path)));
+    setRunningApps(res.runningApps ?? []);
     setPhase('results');
   };
 
@@ -51,17 +56,29 @@ export default function Cleaning() {
     });
   };
 
-  const clean = async () => {
+  const requestClean = () => {
     if (selected.size === 0) return;
+
+    const appsBlocking = runningApps.filter(app =>
+      dirs.some(d => selected.has(d.path) && d.lockedByProcess === app)
+    );
+
+    if (appsBlocking.length > 0) {
+      setWarningApps(appsBlocking);
+      setShowModal(true);
+      return;
+    }
+
+    doClean();
+  };
+
+  const doClean = async () => {
+    setShowModal(false);
     setPhase('cleaning');
 
     const paths = [...selected];
     const hasAdmin = dirs.some(d => d.requiresAdmin && selected.has(d.path));
-
-    if (hasAdmin) {
-      // Informer l'utilisateur avant le popup UAC
-      await new Promise(r => setTimeout(r, 100));
-    }
+    if (hasAdmin) await new Promise(r => setTimeout(r, 100));
 
     const result = await window.api.deleteDirs(paths);
     setCleanResult(result);
@@ -73,11 +90,16 @@ export default function Cleaning() {
     setDirs([]);
     setSelected(new Set());
     setCleanResult(null);
+    setRunningApps([]);
   };
 
   const selectedDirs  = dirs.filter(d => selected.has(d.path));
   const totalSelected = selectedDirs.reduce((acc, d) => acc + d.sizeBytes, 0);
   const hasAdmin      = selectedDirs.some(d => d.requiresAdmin);
+
+  const dirResultMap  = new Map<string, DirCleanResult>(
+    (cleanResult?.dirs ?? []).map(r => [r.path, r])
+  );
 
   return (
     <section className="space-y-6">
@@ -124,10 +146,9 @@ export default function Cleaning() {
         </div>
       )}
 
-      {/* Results list */}
-      {(phase === 'results' || phase === 'done') && dirs.length > 0 && (
+      {/* Phase résultats : liste avec cases à cocher */}
+      {phase === 'results' && dirs.length > 0 && (
         <>
-          {/* Select all */}
           <div className="flex items-center gap-3 pb-2 border-b border-neutral-200">
             <button onClick={toggleAll} className="flex items-center gap-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors">
               {selected.size === dirs.length
@@ -139,39 +160,39 @@ export default function Cleaning() {
             <span className="text-sm text-neutral-500">{dirs.length} dossier{dirs.length > 1 ? 's' : ''} trouvé{dirs.length > 1 ? 's' : ''}</span>
           </div>
 
-          {/* Dir list */}
           <ul className="space-y-2">
             {dirs.map(dir => {
               const isSelected = selected.has(dir.path);
               return (
                 <li
                   key={dir.path}
-                  onClick={() => { if (phase === 'results') toggle(dir.path); }}
+                  onClick={() => toggle(dir.path)}
                   className={[
-                    'flex items-center gap-4 p-4 border transition-colors',
-                    phase === 'results' ? 'cursor-pointer' : 'cursor-default',
+                    'flex items-center gap-4 p-4 border transition-colors cursor-pointer',
                     isSelected
                       ? 'bg-neutral-900/5 border-neutral-900/30'
                       : 'bg-white border-neutral-200 opacity-60',
                   ].join(' ')}
                 >
-                  <button
-                    onClick={e => { e.stopPropagation(); if (phase === 'results') toggle(dir.path); }}
-                    className="flex-shrink-0"
-                    disabled={phase !== 'results'}
-                  >
+                  <button onClick={e => { e.stopPropagation(); toggle(dir.path); }} className="flex-shrink-0">
                     {isSelected
                       ? <CheckSquare className="h-5 w-5 text-neutral-900" />
                       : <Square className="h-5 w-5 text-neutral-400" />}
                   </button>
 
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-sm">{dir.label}</span>
                       {dir.requiresAdmin && (
                         <span className="flex items-center gap-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5">
                           <ShieldAlert className="h-3 w-3" />
                           Admin
+                        </span>
+                      )}
+                      {dir.lockedByProcess && (
+                        <span className="flex items-center gap-1 text-xs text-neutral-500 bg-neutral-100 border border-neutral-300 px-1.5 py-0.5">
+                          <AlertTriangle className="h-3 w-3" />
+                          Fermez {dir.lockedByProcess} d'abord
                         </span>
                       )}
                     </div>
@@ -189,29 +210,50 @@ export default function Cleaning() {
         </>
       )}
 
-      {/* Empty scan */}
+      {/* Phase done : récap par dossier avec icône de statut */}
+      {phase === 'done' && cleanResult && dirs.length > 0 && (
+        <>
+          <div className="pb-2 border-b border-neutral-200">
+            <span className="text-sm text-neutral-600">
+              <span className="font-medium">{formatBytes(cleanResult.freedBytes)}</span> libérés
+              {cleanResult.deletedCount > 0 && ` · ${cleanResult.deletedCount} élément${cleanResult.deletedCount > 1 ? 's' : ''} supprimé${cleanResult.deletedCount > 1 ? 's' : ''}`}
+            </span>
+          </div>
+
+          <ul className="space-y-2">
+            {dirs.filter(d => selected.has(d.path)).map(dir => {
+              const r = dirResultMap.get(dir.path);
+              return (
+                <li key={dir.path} className="flex items-center gap-4 p-4 border border-neutral-200 bg-white">
+                  <span className="flex-shrink-0">
+                    {(r?.status === 'ok' || r?.status === 'partial') && <CheckCircle2 className="h-5 w-5 text-green-500" />}
+                    {r?.status === 'denied'                          && <XCircle      className="h-5 w-5 text-red-500"   />}
+                  </span>
+
+                  <div className="flex-1 min-w-0">
+                    <span className="font-medium text-sm">{dir.label}</span>
+                    <p className="text-xs text-neutral-400 mt-0.5">
+                      {(r?.status === 'ok' || r?.status === 'partial') && 'Nettoyé'}
+                      {r?.status === 'denied'                          && 'Accès refusé'}
+                    </p>
+                  </div>
+
+                  <div className="text-right flex-shrink-0">
+                    <p className="font-semibold text-sm">{formatBytes(r?.freedBytes ?? 0)}</p>
+                    <p className="text-xs text-neutral-400">{dir.fileCount} fichier{dir.fileCount > 1 ? 's' : ''}</p>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+
+      {/* Scan vide */}
       {phase === 'results' && dirs.length === 0 && (
         <div className="flex flex-col items-center justify-center h-48 text-neutral-400 gap-2">
           <Trash2 className="h-10 w-10" />
           <p>Aucun fichier temporaire détecté.</p>
-        </div>
-      )}
-
-      {/* Clean result banner */}
-      {phase === 'done' && cleanResult && (
-        <div className={[
-          'p-4 border',
-          cleanResult.ok
-            ? 'bg-green-50 border-green-200 text-green-800'
-            : 'bg-amber-50 border-amber-200 text-amber-800',
-        ].join(' ')}>
-          <p className="font-medium">
-            {cleanResult.ok ? '✓ Nettoyage terminé' : '⚠ Nettoyage partiel'}
-          </p>
-          <p className="text-sm mt-1">
-            {formatBytes(cleanResult.freedBytes)} libérés · {cleanResult.deletedCount} éléments supprimés
-            {cleanResult.errorCount > 0 && ` · ${cleanResult.errorCount} erreur${cleanResult.errorCount > 1 ? 's' : ''} (fichiers verrouillés ou accès refusé)`}
-          </p>
         </div>
       )}
 
@@ -243,7 +285,7 @@ export default function Cleaning() {
               Annuler
             </button>
             <button
-              onClick={clean}
+              onClick={requestClean}
               disabled={selected.size === 0}
               className="flex items-center gap-2 px-4 py-2 text-sm bg-neutral-900 text-white hover:bg-neutral-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
@@ -253,6 +295,42 @@ export default function Cleaning() {
           </div>
         </div>
       )}
+      {/* Modale : apps à fermer avant nettoyage */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white w-full max-w-sm mx-4 p-6 space-y-4 shadow-xl">
+            <h2 className="font-semibold text-base">Avant de nettoyer…</h2>
+            <p className="text-sm text-neutral-600">
+              Ces applications sont ouvertes et risquent de bloquer une partie du nettoyage.
+              Fermez-les d'abord pour de meilleurs résultats :
+            </p>
+            <ul className="space-y-2">
+              {warningApps.map(app => (
+                <li key={app} className="flex items-center gap-2 text-sm font-medium">
+                  <span className="h-1.5 w-1.5 rounded-full bg-neutral-900 flex-shrink-0" />
+                  {app}
+                </li>
+              ))}
+            </ul>
+            <div className="flex gap-2 justify-end pt-2 border-t border-neutral-100">
+              <button
+                onClick={() => setShowModal(false)}
+                className="px-4 py-2 text-sm text-neutral-600 border border-neutral-200 hover:bg-neutral-50 transition-colors"
+              >
+                Annuler
+              </button>
+              <button
+                onClick={doClean}
+                className="flex items-center gap-2 px-4 py-2 text-sm bg-neutral-900 text-white hover:bg-neutral-800 transition-colors"
+              >
+                <Trash2 className="h-4 w-4" />
+                Nettoyer quand même
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </section>
   );
 }

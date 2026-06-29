@@ -1,9 +1,11 @@
 /* global MAIN_WINDOW_VITE_DEV_SERVER_URL, MAIN_WINDOW_VITE_NAME */
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { spawnSync, execFileSync } = require('child_process');
+const { spawnSync, execFileSync, execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 const log = require('electron-log');
 
 log.info('CoffeeCare démarré');
@@ -22,13 +24,13 @@ const TEMP_DIRS = [
   { path: path.join(localAppData, 'Microsoft', 'Windows', 'WER'),                          label: "Rapports d'erreurs Windows (WER)" },
   { path: path.join(sysRoot, 'SoftwareDistribution', 'Download'),                          label: 'Téléchargements Windows Update' },
   { path: path.join(localAppData, 'Microsoft', 'Windows', 'INetCache'),                    label: 'Cache Internet Explorer / Edge' },
-  { path: path.join(localAppData, 'Microsoft', 'Edge', 'User Data', 'Default', 'Cache'),  label: 'Cache Microsoft Edge' },
-  { path: path.join(localAppData, 'Google', 'Chrome', 'User Data', 'Default', 'Cache'),   label: 'Cache Google Chrome' },
-  { path: path.join(localAppData, 'Mozilla', 'Firefox', 'Profiles'),                       label: 'Profils Firefox' },
-  { path: path.join(localAppData, 'Discord', 'Cache'),                                     label: 'Cache Discord' },
-  { path: path.join(appData, 'Spotify', 'Browser', 'Cache'),                               label: 'Cache Spotify' },
-  { path: path.join(appData, 'Code', 'Cache'),                                              label: 'Cache VS Code' },
-  { path: path.join(localAppData, 'Microsoft', 'Teams', 'Cache'),                          label: 'Cache Microsoft Teams' },
+  { path: path.join(localAppData, 'Microsoft', 'Edge', 'User Data', 'Default', 'Cache'),  label: 'Cache Microsoft Edge',   processName: 'msedge.exe',   appName: 'Microsoft Edge' },
+  { path: path.join(localAppData, 'Google', 'Chrome', 'User Data', 'Default', 'Cache'),   label: 'Cache Google Chrome',   processName: 'chrome.exe',   appName: 'Google Chrome' },
+  { path: path.join(localAppData, 'Mozilla', 'Firefox', 'Profiles'),                       label: 'Profils Firefox',        processName: 'firefox.exe',  appName: 'Firefox' },
+  { path: path.join(localAppData, 'Discord', 'Cache'),                                     label: 'Cache Discord',          processName: 'Discord.exe',  appName: 'Discord' },
+  { path: path.join(appData, 'Spotify', 'Browser', 'Cache'),                               label: 'Cache Spotify',          processName: 'Spotify.exe',  appName: 'Spotify' },
+  { path: path.join(appData, 'Code', 'Cache'),                                              label: 'Cache VS Code',          processName: 'Code.exe',     appName: 'VS Code' },
+  { path: path.join(localAppData, 'Microsoft', 'Teams', 'Cache'),                          label: 'Cache Microsoft Teams',  processName: 'ms-teams.exe', appName: 'Microsoft Teams' },
 ];
 
 async function getDirInfo(dirPath) {
@@ -136,8 +138,16 @@ ipcMain.handle('system:getInfo', () => {
 
 ipcMain.handle('scan:getTempDirs', async () => {
   const result = [];
+  const runningApps = [];
 
-  for (const { path: dirPath, label } of TEMP_DIRS) {
+  // Une seule exécution de tasklist pour toutes les vérifications de processus
+  let tasklistOutput = '';
+  try {
+    const tl = spawnSync('tasklist', ['/NH', '/FO', 'CSV'], { encoding: 'utf8', timeout: 5000 });
+    tasklistOutput = (tl.stdout || '').toLowerCase();
+  } catch { /* si tasklist échoue, on continue sans détection de processus */ }
+
+  for (const { path: dirPath, label, processName, appName } of TEMP_DIRS) {
     if (!fs.existsSync(dirPath)) continue;
 
     const stats = fs.statSync(dirPath);
@@ -151,17 +161,23 @@ ipcMain.handle('scan:getTempDirs', async () => {
     }
 
     const { sizeBytes, fileCount } = await getDirInfo(dirPath);
+    const lockedByProcess = processName && tasklistOutput.includes(processName.toLowerCase()) ? appName : undefined;
 
-    result.push({ path: dirPath, label, requiresAdmin, sizeBytes, fileCount });
+    if (lockedByProcess && !runningApps.includes(lockedByProcess)) {
+      runningApps.push(lockedByProcess);
+    }
+
+    result.push({ path: dirPath, label, requiresAdmin, sizeBytes, fileCount, lockedByProcess });
   }
 
-  return { ok: true, data: result };
+  return { ok: true, data: result, runningApps };
 });
 
 ipcMain.handle('clean:deleteDirs', async (_, paths) => {
   let totalFreed = 0;
   let totalDeleted = 0;
   let totalErrors = 0;
+  const dirResults = [];
 
   // Séparer les dossiers admin et non-admin
   const adminPaths = [];
@@ -176,18 +192,30 @@ ipcMain.handle('clean:deleteDirs', async (_, paths) => {
     }
   }
 
-  // Supprimer les dossiers non-admin directement
+  // Supprimer les dossiers non-admin directement ; collecter ceux totalement bloqués pour retry élevé
+  const deniedForElevation = [];
+
   for (const dirPath of normalPaths) {
     const res = await deleteContents(dirPath);
-    totalFreed += res.freedBytes;
-    totalDeleted += res.deletedCount;
-    totalErrors += res.errorCount;
+
+    if (res.errorCount > 0 && res.deletedCount === 0) {
+      // Aucun fichier supprimé : retry via PowerShell élevé
+      deniedForElevation.push(dirPath);
+    } else {
+      totalFreed   += res.freedBytes;
+      totalDeleted += res.deletedCount;
+      totalErrors  += res.errorCount;
+      const status = res.errorCount === 0 ? 'ok' : 'partial';
+      dirResults.push({ path: dirPath, status, freedBytes: res.freedBytes, deletedCount: res.deletedCount, errorCount: res.errorCount });
+    }
   }
 
-  // Supprimer les dossiers admin via PowerShell élevé
-  if (adminPaths.length > 0) {
+  // Supprimer les dossiers admin + les dossiers complètement bloqués via PowerShell élevé
+  const elevatedPaths = [...adminPaths, ...deniedForElevation];
+
+  if (elevatedPaths.length > 0) {
     const tmpScript = path.join(os.tmpdir(), 'coffeecare_clean.ps1');
-    const commands = adminPaths
+    const commands = elevatedPaths
       .map(p => `Get-ChildItem -Path '${p.replace(/'/g, "''")}' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue`)
       .join('\n');
 
@@ -199,16 +227,20 @@ ipcMain.handle('clean:deleteDirs', async (_, paths) => {
       `Start-Process powershell -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "${tmpScript}"' -Verb RunAs -Wait`,
     ], { timeout: 120_000 });
 
-    if (ps.status === 0) {
-      totalDeleted += adminPaths.length; // estimation
-    } else {
-      totalErrors += adminPaths.length;
+    for (const dirPath of elevatedPaths) {
+      if (ps.status === 0) {
+        totalDeleted++;
+        dirResults.push({ path: dirPath, status: 'ok', freedBytes: 0, deletedCount: 1, errorCount: 0 });
+      } else {
+        totalErrors++;
+        dirResults.push({ path: dirPath, status: 'denied', freedBytes: 0, deletedCount: 0, errorCount: 1 });
+      }
     }
 
     try { fs.unlinkSync(tmpScript); } catch { /* nettoyage best-effort */ }
   }
 
-  return { ok: totalErrors === 0, freedBytes: totalFreed, deletedCount: totalDeleted, errorCount: totalErrors };
+  return { ok: totalErrors === 0, freedBytes: totalFreed, deletedCount: totalDeleted, errorCount: totalErrors, dirs: dirResults };
 });
 
 // ─── Updates ───────────────────────────────────────────────────────────────
@@ -367,24 +399,215 @@ ipcMain.handle('updates:getDrivers', async () => {
   }
 });
 
-ipcMain.handle('updates:installSoftware', async (_, ids) => {
-  if (!ids || ids.length === 0) return { ok: true, installed: 0, errors: 0 };
+// Codes Windows "succès + redémarrage requis" (partagés entre les deux handlers winget)
+const REBOOT_CODES = new Set([3010, 1641]);
 
-  const winget = findWingetPath();
-  if (!winget) return { ok: false, installed: 0, errors: ids.length };
+const WINGET_REASON_PATTERNS = [
+  [/fichiers.{0,80}actuellement utilis/i,                   "Fermez l'application, puis réessayez"],
+  [/technologie d.installation différente/i,                'Réinstallation manuelle requise'],
+  [/code de hachage.{0,40}ne correspond pas/i,              'Problème de téléchargement — réessayez'],
+  [/aucune mise à (?:niveau|upgrade) applicable/i,          'Pas de version compatible pour votre système'],
+  [/ne s.applique pas à votre système/i,                    'Pas de version compatible pour votre système'],
+  [/aucun package installé ne correspond/i,                 'Package non reconnu par winget'],
+  [/impossible de déterminer le numéro de version/i,        'Version non identifiable — mise à jour impossible'],
+  [/application not found/i,                                'Application introuvable par winget'],
+  [/une erreur inattendue s.est produite/i,                 'Erreur interne — réessayez'],
+  [/code de sortie.*3221226525/,                            'Droits administrateur probablement requis'],
+  [/code de sortie.*6\b/,                                   "Fermez l'application avant de mettre à jour"],
+];
 
-  // Le script élevé utilise le chemin absolu vers winget.exe
-  const escaped = winget.replace(/\\/g, '\\\\');
-  const commands = ids
-    .map(id => `& "${escaped}" upgrade --id "${id}" --silent --accept-source-agreements --accept-package-agreements --force`)
-    .join('\n');
+function extractWingetReason(output, exitCode) {
+  for (const [pattern, message] of WINGET_REASON_PATTERNS) {
+    if (pattern.test(output)) return message;
+  }
 
-  const ps = runPsScriptElevated(commands);
-  return {
-    ok: ps.status === 0,
-    installed: ps.status === 0 ? ids.length : 0,
-    errors:    ps.status !== 0 ? ids.length : 0,
+  // Dernière ligne significative (ignore les lignes de spinner : -, \, |, /)
+  const lastLine = output.split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(l => l.length > 5 && !/^[-\\|/]$/.test(l))
+    .pop();
+
+  if (lastLine) return lastLine.slice(0, 120);
+
+  const CODE_MAP = {
+    2316632070: "L'installeur a échoué",
+    2316632337: "Fichiers en cours d'utilisation — fermez l'application",
+    2316632081: 'Vérification de sécurité échouée',
+    2147746293: 'Application introuvable par winget',
   };
+  return CODE_MAP[exitCode] || `Code d'erreur ${exitCode}`;
+}
+
+ipcMain.handle('updates:installSoftwareStream', async (event, packages) => {
+  if (!packages || packages.length === 0) return { logFile: null };
+
+  const winget   = findWingetPath();
+  const logsDir  = path.join(app.getPath('userData'), 'logs');
+  if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+
+  const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+  const logFile   = path.join(logsDir, `update-${timestamp}.log`);
+  const logLines  = [
+    `=== Rapport de mise à jour — ${new Date().toLocaleString('fr-FR')} ===`,
+    `winget : ${winget ?? 'introuvable'}`,
+    '',
+  ];
+  let hasErrors = false;
+
+  for (const { id, name } of packages) {
+    event.sender.send('updates:swProgress', { id, status: 'installing' });
+
+    if (!winget) {
+      logLines.push(`✗ ${name} (${id})\n  winget introuvable\n`);
+      hasErrors = true;
+      event.sender.send('updates:swProgress', { id, status: 'error' });
+      continue;
+    }
+
+    // Script PowerShell par package : capture stdout+stderr via 2>&1,
+    // préserve le code de sortie de winget
+    const scriptFile = path.join(os.tmpdir(), `cc_install_${Date.now()}.ps1`);
+    const ew = winget.replace(/'/g, "''");
+    const ei = id.replace(/'/g, "''");
+    const script = [
+      `$out = & '${ew}' upgrade --id '${ei}' --include-unknown --silent --accept-source-agreements --accept-package-agreements --force --disable-interactivity 2>&1`,
+      `$code = $LASTEXITCODE`,
+      `$out | ForEach-Object { Write-Output $_ }`,
+      `exit $code`,
+    ].join('\n');
+    fs.writeFileSync(scriptFile, script, 'utf8');
+
+    let ok = false;
+    let captured = '';
+    let exitCode = -1;
+
+    try {
+      const result = await execFileAsync('powershell', [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptFile,
+      ], { timeout: 300_000, encoding: 'utf8' });
+      captured = ((result.stdout || '') + (result.stderr || '')).trim();
+      ok = true;
+      exitCode = 0;
+    } catch (err) {
+      captured = ((err.stdout || '') + (err.stderr || '')).trim();
+      exitCode = typeof err.code === 'number' ? err.code : -1;
+      // Ces codes signifient "installé avec succès, mais redémarrage nécessaire"
+      if (REBOOT_CODES.has(exitCode)) ok = true;
+    }
+
+    try { fs.unlinkSync(scriptFile); } catch { /* best-effort */ }
+
+    // Détection du type de redémarrage requis
+    let reboot = undefined;
+    if (ok) {
+      if (REBOOT_CODES.has(exitCode)) {
+        reboot = 'system';
+      } else if (/redémarr[a-z]*\s.{0,40}(?:application|logiciel)|restart\s.{0,40}application/i.test(captured)) {
+        reboot = 'app';
+      } else if (/redémarr[a-z]*\s.{0,40}(?:ordinateur|système|pc|windows)|reboot\s.{0,40}(?:required|computer|machine)/i.test(captured)) {
+        reboot = 'system';
+      }
+    }
+
+    log[ok ? 'info' : 'warn'](`[winget] ${ok ? 'OK' : 'FAIL'} ${id} (exit=${exitCode})\n${captured}`);
+
+    if (ok) {
+      const rebootNote = reboot === 'system' ? ' (redémarrage PC requis)'
+                       : reboot === 'app'    ? ' (redémarrage logiciel requis)'
+                       : '';
+      logLines.push(`✓ ${name} (${id}) — Mis à jour${rebootNote}`);
+    } else {
+      hasErrors = true;
+      const outputSection = captured
+        ? captured.split(/\r?\n/).filter(Boolean).map(l => `  ${l}`).join('\n')
+        : '  (aucune sortie capturée — winget écrit peut-être directement sur la console)';
+      logLines.push(`✗ ${name} (${id}) — Échec (code de sortie : ${exitCode})\n${outputSection}`);
+    }
+
+    const reason = ok ? undefined : extractWingetReason(captured, exitCode);
+    event.sender.send('updates:swProgress', { id, status: ok ? 'ok' : 'error', reason, reboot });
+  }
+
+  if (hasErrors) {
+    fs.writeFileSync(logFile, logLines.join('\n'), 'utf8');
+    log.info(`[winget] rapport écrit : ${logFile}`);
+    return { logFile };
+  }
+
+  return { logFile: null };
+});
+
+ipcMain.handle('shell:openPath', (_, filePath) => shell.openPath(filePath));
+
+ipcMain.handle('updates:installElevated', async (_, { id, name }) => {
+  const winget = findWingetPath();
+  if (!winget) return { ok: false, reason: 'winget introuvable' };
+
+  const ts          = Date.now();
+  const innerScript = path.join(os.tmpdir(), `cc_elev_inner_${ts}.ps1`);
+  const wrapScript  = path.join(os.tmpdir(), `cc_elev_wrap_${ts}.ps1`);
+  const outFile     = path.join(os.tmpdir(), `cc_elev_out_${ts}.txt`);
+  const codeFile    = path.join(os.tmpdir(), `cc_elev_code_${ts}.txt`);
+
+  const ew = winget.replace(/'/g, "''");
+  const ei = id.replace(/'/g, "''");
+  const qInner = innerScript.replace(/'/g, "''");
+  const qOut   = outFile.replace(/'/g, "''");
+  const qCode  = codeFile.replace(/'/g, "''");
+
+  // Script élevé : exécute winget et écrit la sortie + code dans des fichiers temp
+  fs.writeFileSync(innerScript, [
+    `$out  = & '${ew}' upgrade --id '${ei}' --include-unknown --silent --accept-source-agreements --accept-package-agreements --force --disable-interactivity 2>&1`,
+    `$code = $LASTEXITCODE`,
+    `$out  | Out-File '${qOut}'  -Encoding UTF8`,
+    `$code | Out-File '${qCode}' -Encoding UTF8`,
+  ].join('\n'), 'utf8');
+
+  // Script wrapper : lance le script élevé via UAC
+  // Forme tableau pour -ArgumentList → gère les chemins avec espaces
+  fs.writeFileSync(wrapScript, [
+    `$inner = '${qInner}'`,
+    `Start-Process powershell -Verb RunAs -Wait -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $inner)`,
+  ].join('\n'), 'utf8');
+
+  let captured = '';
+  let exitCode = -1;
+
+  try {
+    // execFileAsync est async → n'bloque pas l'event loop pendant l'UAC
+    await execFileAsync('powershell', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', wrapScript,
+    ], { timeout: 600_000 });
+  } catch (err) {
+    log.warn(`[winget-elevated] wrapper erreur: ${err.message}`);
+    for (const f of [wrapScript, innerScript, outFile, codeFile]) {
+      try { fs.unlinkSync(f); } catch { /* best-effort */ }
+    }
+    return { ok: false, reason: 'Autorisation refusée ou mise à jour annulée' };
+  }
+
+  for (const f of [wrapScript, innerScript]) {
+    try { fs.unlinkSync(f); } catch { /* best-effort */ }
+  }
+
+  try {
+    if (fs.existsSync(outFile))  { captured = fs.readFileSync(outFile, 'utf8').trim();  fs.unlinkSync(outFile); }
+    if (fs.existsSync(codeFile)) { exitCode = parseInt(fs.readFileSync(codeFile, 'utf8').trim(), 10) || -1; fs.unlinkSync(codeFile); }
+  } catch (e) {
+    log.warn(`[winget-elevated] lecture résultats: ${e.message}`);
+  }
+
+  const ok = exitCode === 0 || REBOOT_CODES.has(exitCode);
+  const reboot = ok
+    ? (REBOOT_CODES.has(exitCode) ? 'system'
+      : /redémarr[a-z]*\s.{0,40}(?:application|logiciel)/i.test(captured) ? 'app'
+      : /redémarr[a-z]*\s.{0,40}(?:ordinateur|système|pc|windows)/i.test(captured) ? 'system'
+      : undefined)
+    : undefined;
+
+  log[ok ? 'info' : 'warn'](`[winget-elevated] ${ok ? 'OK' : 'FAIL'} ${id} (exit=${exitCode})\n${captured}`);
+
+  return { ok, reason: ok ? undefined : extractWingetReason(captured, exitCode), reboot };
 });
 
 ipcMain.handle('updates:installDrivers', async () => {

@@ -10,10 +10,14 @@ contextBridge.exposeInMainWorld('api', {
   deleteDirs:         (paths)   => ipcRenderer.invoke('clean:deleteDirs', paths),
 
   // Mises à jour
-  getSoftwareUpdates: ()        => ipcRenderer.invoke('updates:getSoftware'),
-  getDriverUpdates:   ()        => ipcRenderer.invoke('updates:getDrivers'),
-  installSoftware:    (ids)     => ipcRenderer.invoke('updates:installSoftware', ids),
-  installDrivers:     ()        => ipcRenderer.invoke('updates:installDrivers'),
+  getSoftwareUpdates:     ()    => ipcRenderer.invoke('updates:getSoftware'),
+  getDriverUpdates:       ()    => ipcRenderer.invoke('updates:getDrivers'),
+  installSoftwareStream:  (pkgs) => ipcRenderer.invoke('updates:installSoftwareStream', pkgs),
+  onSwProgress:  (cb)           => ipcRenderer.on('updates:swProgress', (_, data) => cb(data)),
+  offSwProgress: ()             => ipcRenderer.removeAllListeners('updates:swProgress'),
+  openLogFile:      (p)           => ipcRenderer.invoke('shell:openPath', p),
+  installElevated:  (pkg)         => ipcRenderer.invoke('updates:installElevated', pkg),
+  installDrivers:         ()    => ipcRenderer.invoke('updates:installDrivers'),
 
   // Réparation
   getServices:        ()        => ipcRenderer.invoke('repair:getServices'),
