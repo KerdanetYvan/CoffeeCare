@@ -523,7 +523,7 @@ export default function Repair() {
             {drvFixPhase === 'idle' && drivers.length > 0 && (
               <div className="flex items-center justify-between pt-1">
                 <p className="text-sm text-neutral-500">
-                  CoffeeCare va tenter de relancer ces composants. Windows vous demandera l'autorisation.
+                  Cleaner PC va tenter de relancer ces composants. Windows vous demandera l'autorisation.
                 </p>
                 <button
                   onClick={fixDrivers}
@@ -591,7 +591,7 @@ export default function Repair() {
         <p className="text-sm text-neutral-500">
           Quand un programme est mal désinstallé, il peut laisser une trace dans Windows
           et continuer à apparaître dans la liste des programmes installés alors qu'il n'existe
-          plus sur votre PC. CoffeeCare peut détecter et supprimer ces entrées obsolètes.
+          plus sur votre PC. Cleaner PC peut détecter et supprimer ces entrées obsolètes.
         </p>
 
         {regPhase === 'scanning' && (
@@ -827,7 +827,7 @@ export default function Repair() {
 
         <p className="text-sm text-neutral-500">
           Vérifiez l'état de santé de votre disque dur. Si des anomalies sont détectées,
-          CoffeeCare peut programmer une vérification approfondie au prochain démarrage.
+          Cleaner PC peut programmer une vérification approfondie au prochain démarrage.
         </p>
 
         {diskPhase === 'scanning' && (

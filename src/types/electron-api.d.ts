@@ -214,6 +214,10 @@ declare global {
       getDiskHealth:     () => Promise<DiskHealthResult>;
       scheduleDiskCheck: (letters: string[]) => Promise<{ ok: boolean }>;
 
+      // Paramètres
+      getSettingsInfo: () => Promise<{ version: string; openAtLogin: boolean }>;
+      setLoginItem:    (v: boolean) => Promise<{ ok: boolean }>;
+
       // Fenêtre
       minimizeWindow: () => Promise<void>;
       maximizeWindow: () => Promise<void>;

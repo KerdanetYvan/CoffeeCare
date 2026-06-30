@@ -8,7 +8,7 @@ const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 const log = require('electron-log');
 
-log.info('CoffeeCare démarré');
+log.info('Cleaner PC started');
 
 // Chemins résolus une seule fois au démarrage
 const sysRoot    = process.env.SystemRoot    || 'C:\\Windows';
@@ -96,7 +96,7 @@ function createMainWindow() {
     height: 720,
     minWidth: 900,
     minHeight: 600,
-    title: 'CoffeeCare',
+    title: 'Cleaner PC',
     frame: false,
     roundedCorners: false,
     backgroundColor: '#f9fafb',
@@ -214,7 +214,7 @@ ipcMain.handle('clean:deleteDirs', async (_, paths) => {
   const elevatedPaths = [...adminPaths, ...deniedForElevation];
 
   if (elevatedPaths.length > 0) {
-    const tmpScript = path.join(os.tmpdir(), 'coffeecare_clean.ps1');
+    const tmpScript = path.join(os.tmpdir(), 'cleaner_pc_clean.ps1');
     const commands = elevatedPaths
       .map(p => `Get-ChildItem -Path '${p.replace(/'/g, "''")}' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue`)
       .join('\n');
@@ -246,7 +246,7 @@ ipcMain.handle('clean:deleteDirs', async (_, paths) => {
 // ─── Updates ───────────────────────────────────────────────────────────────
 
 function runPsScriptElevated(scriptContent, timeoutMs = 300_000) {
-  const tmpScript = path.join(os.tmpdir(), 'coffeecare_elevated.ps1');
+  const tmpScript = path.join(os.tmpdir(), 'cleaner_pc_elevated.ps1');
   fs.writeFileSync(tmpScript, scriptContent, 'utf8');
   const windowStyle = MAIN_WINDOW_VITE_DEV_SERVER_URL ? '' : ' -WindowStyle Hidden';
   const ps = spawnSync('powershell', [
@@ -980,16 +980,42 @@ ipcMain.handle('repair:getRegistryIssues', async () => {
 ipcMain.handle('repair:fixRegistryIssues', async (_, registryPaths) => {
   if (!registryPaths || registryPaths.length === 0) return { ok: true, fixed: 0, errors: 0 };
 
-  const lines = registryPaths
-    .map(p => `Remove-Item -LiteralPath '${String(p).replace(/'/g, "''")}' -Recurse -Force -ErrorAction SilentlyContinue`)
+  // PSPath (ex: "Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\...") n'est pas
+  // utilisable tel quel par Remove-Item dans une session élevée distincte — on le convertit
+  // en chemin PSDrive standard (HKLM:\..., HKCU:\...) que PowerShell reconnaît toujours.
+  const regPaths = registryPaths.map(p =>
+    String(p)
+      .replace(/^Microsoft\.PowerShell\.Core\\Registry::HKEY_LOCAL_MACHINE/i, 'HKLM:')
+      .replace(/^Microsoft\.PowerShell\.Core\\Registry::HKEY_CURRENT_USER/i,  'HKCU:')
+      .replace(/^Microsoft\.PowerShell\.Core\\Registry::HKEY_CLASSES_ROOT/i,  'HKCR:')
+      .replace(/^Microsoft\.PowerShell\.Core\\Registry::HKEY_USERS/i,         'HKU:')
+  );
+
+  const resultFile = path.join(os.tmpdir(), `cc_reg_fix_${Date.now()}.txt`);
+  const safeResult = resultFile.replace(/'/g, "''");
+
+  const deletions = regPaths
+    .map(p => {
+      const safe = p.replace(/'/g, "''");
+      return `if (Test-Path -LiteralPath '${safe}') { try { Remove-Item -LiteralPath '${safe}' -Recurse -Force -ErrorAction Stop; $fixed++ } catch { $errors++ } } else { $errors++ }`;
+    })
     .join('\n');
 
-  const ps = runPsScriptElevated(lines, 2 * 60_000);
-  return {
-    ok:     ps.status === 0,
-    fixed:  ps.status === 0 ? registryPaths.length : 0,
-    errors: ps.status !== 0 ? registryPaths.length : 0,
-  };
+  const script = `$fixed = 0\n$errors = 0\n${deletions}\n"$fixed|$errors" | Out-File -LiteralPath '${safeResult}' -Encoding UTF8 -Force`;
+
+  runPsScriptElevated(script, 2 * 60_000);
+
+  let fixed = 0;
+  let errors = registryPaths.length;
+  try {
+    const content = fs.readFileSync(resultFile, 'utf8').trim();
+    fs.unlinkSync(resultFile);
+    const parts = content.split('|').map(Number);
+    fixed  = parts[0] || 0;
+    errors = parts[1] || 0;
+  } catch { /* UAC annulé — errors reste à registryPaths.length */ }
+
+  return { ok: errors === 0, fixed, errors };
 });
 
 // ─── Repair — Démarrage ────────────────────────────────────────────────────
@@ -1153,6 +1179,18 @@ ipcMain.handle('repair:scheduleDiskCheck', async (_, letters) => {
 
   const ps = runPsScriptElevated(lines, 30_000);
   return { ok: ps.status === 0 };
+});
+
+// ─── Paramètres ─────────────────────────────────────────────────────────────
+
+ipcMain.handle('settings:getInfo', () => ({
+  version:     app.getVersion(),
+  openAtLogin: app.getLoginItemSettings().openAtLogin,
+}));
+
+ipcMain.handle('settings:setLoginItem', (_, openAtLogin) => {
+  app.setLoginItemSettings({ openAtLogin: Boolean(openAtLogin) });
+  return { ok: true };
 });
 
 // ─── Window controls ────────────────────────────────────────────────────────

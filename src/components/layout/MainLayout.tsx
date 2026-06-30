@@ -28,7 +28,7 @@ export default function MainLayout() {
         {/* Logo + nom */}
         <div className="flex items-center gap-2 px-4 pointer-events-none">
           <Coffee className="h-4 w-4 text-neutral-400" />
-          <span className="text-sm font-semibold tracking-wide">CoffeeCare</span>
+          <span className="text-sm font-semibold tracking-wide">Cleaner PC</span>
         </div>
 
         {/* Zone extensible (draggable) */}

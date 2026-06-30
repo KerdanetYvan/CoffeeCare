@@ -4,15 +4,17 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    name: 'CoffeeCare',
-    executableName: 'coffeecare',
+    name: 'Cleaner PC',
+    executableName: 'cleaner-pc',
   },
   rebuildConfig: {},
   makers: [
     {
       name: '@electron-forge/maker-squirrel',
       config: {
-        name: 'CoffeeCare',
+        name: 'CleanerPC',
+        authors: 'Kerdanet Yvan',
+        description: 'Application de maintenance PC pour Windows',
       },
     },
     {

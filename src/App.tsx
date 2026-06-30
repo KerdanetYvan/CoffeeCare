@@ -19,7 +19,7 @@ export default function App() {
         <Route element={<MainLayout />}>
           {/* Index = / => Dashboard */}
           <Route index element={<Dashboard />} />
-          {/* Routes principales CoffeeCare */}
+          {/* Routes principales */}
           <Route path="cleaning" element={<Cleaning />} />
           <Route path="repair"   element={<Repair />} />
           <Route path="updates"  element={<Updates />} />

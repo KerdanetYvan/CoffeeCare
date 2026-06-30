@@ -1,53 +1,79 @@
-# CoffeeCare
+# Cleaner PC
 
-Application desktop Windows de maintenance PC — nettoyage, réparation et mises à jour système.
+Application de maintenance PC pour Windows, conçue pour le grand public.  
+Nettoyage, réparation et mises à jour en quelques clics — sans jargon technique.
 
-Construite avec **Electron + React + TypeScript + Vite + Tailwind CSS**.
+> **Statut : alpha** — en développement actif. Des bugs peuvent survenir.
 
-## Fonctionnalités prévues
+---
+
+## Fonctionnalités
 
 | Module | Description |
-| ------ | ----------- |
-| Dashboard | Vue d'ensemble : OS, CPU, RAM, uptime |
-| Nettoyage | Suppression de fichiers temporaires et caches |
-| Réparation | Diagnostic et correctifs (services, registres, pilotes) |
-| Mises à jour | Pilotes, Windows Update, applications via winget |
-| Paramètres | Thème, langue, télémétrie, chemins personnalisés |
+| ------------ | -------------------------------------------- |
+| Dashboard | Vue d'ensemble du système : OS, CPU, RAM, uptime |
+| Nettoyage | Suppression des fichiers temporaires et caches |
+| Réparation | Services Windows, fichiers système, registre, disque |
+| Mises à jour | Logiciels (winget) et pilotes |
+| Paramètres | Démarrage automatique, informations sur l'application |
+
+---
 
 ## Prérequis
 
-- Node.js 20+
-- npm 10+
-- Windows 10/11
+- Windows 10 ou Windows 11
+- Droits administrateur (requis pour certaines opérations de réparation et nettoyage)
+
+---
 
 ## Installation
 
-```bash
-npm install
-```
+1. Télécharger le fichier `.exe` depuis la section [Releases](../../releases)
+2. Lancer l'installeur et suivre les étapes
+3. Cleaner PC s'installe et se lance automatiquement
+
+---
 
 ## Développement
 
+### Prérequis développement
+
+- [Node.js](https://nodejs.org/) 20+
+- npm
+
+### Lancer en mode développement
+
 ```bash
+npm install
 npm run dev
 ```
 
-Lance Vite (HMR) et Electron en parallèle. Les DevTools s'ouvrent automatiquement en mode dev.
+Vite + Electron démarrent en parallèle avec le rechargement à chaud (HMR).  
+Les DevTools s'ouvrent automatiquement.
 
-## Build
+### Construire
 
 ```bash
-npm run build   # Génère dist/
-npm start       # Lance Electron sur le build
+npm run build   # Build de production
+npm run make    # Génère l'installeur distributable
 ```
 
-## Stack
+---
 
-- **Electron 38** — runtime desktop
-- **React 19** — UI
-- **TypeScript 5.9** — typage strict
-- **Vite 7** — bundler avec HMR
-- **React Router v7** — navigation (HashRouter pour compatibilité Electron)
-- **Tailwind CSS 3.4** — styles utilitaires
-- **Lucide React** — icônes
-- **electron-log** — logs applicatifs
+## Stack technique
+
+| Couche | Technologie |
+| ------- | ----------- |
+| Desktop | Electron 38 |
+| Frontend | React 19 + TypeScript 5.9 |
+| Bundler | Vite 7 |
+| Routing | React Router v7 (HashRouter) |
+| Style | Tailwind CSS 3.4 |
+| Icônes | Lucide React |
+| Logs | electron-log |
+
+---
+
+## Changelog
+
+Voir [CHANGELOG.md](./CHANGELOG.md) pour l'historique des versions.

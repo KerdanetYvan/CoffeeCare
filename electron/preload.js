@@ -33,6 +33,10 @@ contextBridge.exposeInMainWorld('api', {
   getDiskHealth:      ()        => ipcRenderer.invoke('repair:getDiskHealth'),
   scheduleDiskCheck:  (letters) => ipcRenderer.invoke('repair:scheduleDiskCheck', letters),
 
+  // Paramètres
+  getSettingsInfo:  ()             => ipcRenderer.invoke('settings:getInfo'),
+  setLoginItem:     (v)            => ipcRenderer.invoke('settings:setLoginItem', v),
+
   // Fenêtre
   minimizeWindow:  () => ipcRenderer.invoke('window:minimize'),
   maximizeWindow:  () => ipcRenderer.invoke('window:maximize'),

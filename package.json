@@ -1,8 +1,8 @@
 {
-  "name": "coffeecare",
-  "productName": "CoffeeCare",
+  "name": "cleaner-pc",
+  "productName": "Cleaner PC",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.1.0-alpha.1",
   "main": ".vite/build/main.js",
   "scripts": {
     "dev": "electron-forge start",
