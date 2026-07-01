@@ -7,6 +7,19 @@ versionnage selon [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [0.1.0-alpha.2] — 2026-07-01
+
+Mise à jour de stabilité.
+
+### Corrigé
+
+- Empêche l'application de s'ouvrir plusieurs fois en même temps, ce qui pouvait bloquer certains fichiers lors d'une réinstallation ou d'une mise à jour
+
+### Connu
+
+- Le thème sombre n'est pas encore disponible
+- L'interface est disponible uniquement en français
+
 ## [0.1.0-alpha.1] — 2026-07-01
 
 Première version alpha publique.
