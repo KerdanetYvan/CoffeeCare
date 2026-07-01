@@ -1,4 +1,5 @@
 /* global MAIN_WINDOW_VITE_DEV_SERVER_URL, MAIN_WINDOW_VITE_NAME */
+import log from 'electron-log';
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const os = require('os');
@@ -6,9 +7,21 @@ const fs = require('fs');
 const { spawnSync, execFileSync, execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
-const log = require('electron-log');
 
 log.info('Cleaner PC started');
+
+// Empêche plusieurs instances de tourner en même temps (évite les process
+// fantômes qui verrouillent les fichiers lors d'une réinstallation/mise à jour)
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+}
+
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
 
 // Chemins résolus une seule fois au démarrage
 const sysRoot    = process.env.SystemRoot    || 'C:\\Windows';

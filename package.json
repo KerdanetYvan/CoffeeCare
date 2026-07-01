@@ -2,7 +2,7 @@
   "name": "cleaner-pc",
   "productName": "Cleaner PC",
   "private": true,
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "main": ".vite/build/main.js",
   "scripts": {
     "dev": "electron-forge start",

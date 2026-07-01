@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build installer
+        run: npm run make
+
+      - name: Compose release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+
+          node scripts/extract-changelog.mjs "$VERSION" > changelog-section.md
+
+          {
+            cat docs/PRESENTATION.md
+            echo
+            echo '---'
+            echo
+            cat changelog-section.md
+            echo
+            echo '---'
+            echo
+            echo '## Installation'
+            echo
+            echo "1. Téléchargez \`Cleaner PC-$VERSION Setup.exe\` ci-dessous."
+            echo '2. Lancez l’installeur. Windows peut afficher un avertissement SmartScreen (l’application n’est pas encore signée) : cliquez sur "Informations complémentaires" puis "Exécuter quand même".'
+            echo '3. Cleaner PC s’installe et se lance automatiquement.'
+            echo
+            echo '## Vérification'
+            echo
+            echo '```'
+            shopt -s nullglob
+            for f in "out/make/squirrel.windows/x64/"*.exe "out/make/zip/win32/x64/"*.zip; do
+              sha256sum "$f"
+            done
+            echo '```'
+          } > full-release-body.md
+
+      - name: Determine prerelease flag
+        id: prerelease
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "flag=--prerelease" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          shopt -s nullglob
+          assets=("out/make/squirrel.windows/x64/"*.exe "out/make/zip/win32/x64/"*.zip)
+
+          gh release create "$TAG" \
+            --title "Cleaner PC $VERSION" \
+            --notes-file full-release-body.md \
+            ${{ steps.prerelease.outputs.flag }} \
+            "${assets[@]}"
