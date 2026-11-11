@@ -12,10 +12,6 @@ dist
 dist-ssr
 *.local
 
-# electron-forge outputs
-.vite/
-out/
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -30,7 +30,7 @@ Nettoyage, réparation et mises à jour en quelques clics — sans jargon techni
 
 1. Télécharger le fichier `.exe` depuis la section [Releases](../../releases)
 2. Lancer l'installeur et suivre les étapes
-3. Cleaner PC s'installe et se lance automatiquement
+3. Une fois l'installation terminée, lancez Cleaner PC depuis le menu Démarrer
 
 ---
 
@@ -39,7 +39,9 @@ Nettoyage, réparation et mises à jour en quelques clics — sans jargon techni
 ### Prérequis développement
 
 - [Node.js](https://nodejs.org/) 20+
-- npm
+- [Rust](https://rustup.rs/) (version stable récente)
+- Les « Outils de build Visual Studio » avec la charge de travail **Développement Desktop en C++** (`winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"`)
+- WebView2 (déjà présent sur Windows 11)
 
 ### Lancer en mode développement
 
@@ -48,14 +50,16 @@ npm install
 npm run dev
 ```
 
-Vite + Electron démarrent en parallèle avec le rechargement à chaud (HMR).  
-Les DevTools s'ouvrent automatiquement.
+Vite et Tauri démarrent ensemble avec le rechargement à chaud (HMR). La première compilation de la partie Rust prend quelques minutes.
 
 ### Construire
 
 ```bash
-npm run build   # Build de production
-npm run make    # Génère l'installeur distributable
+npm run build        # Génère l'installeur Windows (src-tauri/target/release/bundle/nsis)
+npm run build:web    # Interface seule (Vite)
+npm run lint         # ESLint
+npm run typecheck    # TypeScript
+cd src-tauri && cargo test    # Tests Rust
 ```
 
 ---
@@ -64,13 +68,13 @@ npm run make    # Génère l'installeur distributable
 
 | Couche | Technologie |
 | ------- | ----------- |
-| Desktop | Electron 38 |
+| Desktop | Tauri 2 (Rust) |
 | Frontend | React 19 + TypeScript 5.9 |
 | Bundler | Vite 7 |
 | Routing | React Router v7 (HashRouter) |
 | Style | Tailwind CSS 3.4 |
 | Icônes | Lucide React |
-| Logs | electron-log |
+| Logs | tauri-plugin-log |
 
 ---
 

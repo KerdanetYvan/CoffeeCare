@@ -40,3 +40,42 @@ jobs:
       - name: Verify changelog is parseable
         shell: bash
         run: node scripts/extract-changelog.mjs "$(node -p "require('./package.json').version")" > /dev/null
+
+  rust:
+    name: Rust (format, clippy, tests)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # tauri-build vérifie la présence du dossier de l'interface et lit la version de package.json
+      - name: Install dependencies and build interface
+        working-directory: .
+        run: |
+          npm ci
+          npm run build:web
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test

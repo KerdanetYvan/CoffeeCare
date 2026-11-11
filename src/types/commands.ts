@@ -180,49 +180,36 @@ export interface DiskHealthResult {
   error?: string;
 }
 
-declare global {
-  interface Window {
-    api: {
-      // Dashboard
-      getSystemInfo:      () => Promise<SystemInfo>;
+export interface Ack {
+  ok: boolean;
+}
 
-      // Nettoyage
-      getTempDirs:        () => Promise<ScanResult>;
-      deleteDirs:         (paths: string[]) => Promise<CleanResult>;
+export interface SettingsInfo {
+  version: string;
+  openAtLogin: boolean;
+}
 
-      // Mises à jour
-      getSoftwareUpdates:    () => Promise<UpdatesListResult<SoftwareUpdate>>;
-      getDriverUpdates:      () => Promise<UpdatesListResult<DriverUpdate>>;
-      installSoftwareStream: (packages: { id: string; name: string }[]) => Promise<{ logFile: string | null }>;
-      onSwProgress:  (cb: (data: { id: string; status: 'installing' | 'ok' | 'error'; reason?: string; reboot?: 'app' | 'system' }) => void) => void;
-      offSwProgress: () => void;
-      openLogFile:     (path: string) => Promise<string>;
-      installElevated: (pkg: { id: string; name: string }) => Promise<{ ok: boolean; reason?: string; reboot?: 'app' | 'system'; logFile?: string }>;
-      closeRelatedApp: (pkg: { name: string }) => Promise<{ ok: boolean; processName?: string; reason?: 'not_found' | 'ambiguous' | 'error'; candidates?: string[] }>;
-      installDrivers: () => Promise<InstallResult>;
+export interface SwProgress {
+  id: string;
+  status: 'installing' | 'ok' | 'error';
+  reason?: string;
+  reboot?: 'app' | 'system';
+}
 
-      // Réparation
-      getServices:        () => Promise<ServiceScanResult>;
-      fixServices:        (names: string[]) => Promise<RepairResult>;
-      runSFC:             () => Promise<SFCResult>;
-      getDriverErrors:    () => Promise<DriverErrorScanResult>;
-      fixDriverErrors:    (ids: string[]) => Promise<RepairResult>;
-      getRegistryIssues:  () => Promise<RegistryScanResult>;
-      fixRegistryIssues:  (paths: string[]) => Promise<RepairResult>;
-      getStartupItems:    () => Promise<StartupScanResult>;
-      setStartupItems:    (changes: StartupChange[]) => Promise<{ ok: boolean }>;
-      getDiskHealth:     () => Promise<DiskHealthResult>;
-      scheduleDiskCheck: (letters: string[]) => Promise<{ ok: boolean }>;
+export interface StreamResult {
+  logFile: string | null;
+}
 
-      // Paramètres
-      getSettingsInfo: () => Promise<{ version: string; openAtLogin: boolean }>;
-      setLoginItem:    (v: boolean) => Promise<{ ok: boolean }>;
+export interface ElevatedInstallResult {
+  ok: boolean;
+  reason?: string;
+  reboot?: 'app' | 'system';
+  logFile?: string;
+}
 
-      // Fenêtre
-      minimizeWindow: () => Promise<void>;
-      maximizeWindow: () => Promise<void>;
-      closeWindow:    () => Promise<void>;
-      isMaximized:    () => Promise<boolean>;
-    };
-  }
+export interface CloseAppResult {
+  ok: boolean;
+  processName?: string;
+  reason?: 'not_found' | 'ambiguous' | 'error';
+  candidates?: string[];
 }

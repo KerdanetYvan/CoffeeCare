@@ -1,6 +1,9 @@
 ﻿import { useEffect, useState } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { NavLink, Outlet } from 'react-router-dom';
 import { Cpu, Wrench, Brush, RefreshCw, Settings, Minus, Square, X, Coffee } from 'lucide-react';
+
+const appWindow = getCurrentWindow();
 
 const nav = [
   { to: '/',          label: 'Dashboard',    icon: Cpu      },
@@ -14,7 +17,7 @@ export default function MainLayout() {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
-    const check = async () => setMaximized(await window.api.isMaximized());
+    const check = async () => setMaximized(await appWindow.isMaximized());
     check();
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
@@ -24,7 +27,7 @@ export default function MainLayout() {
     <div className="h-screen w-screen flex flex-col select-none overflow-hidden">
 
       {/* ── Barre de titre ── */}
-      <header className="drag-region flex items-center h-10 bg-neutral-900 text-white flex-shrink-0">
+      <header data-tauri-drag-region className="drag-region flex items-center h-10 bg-neutral-900 text-white flex-shrink-0">
         {/* Logo + nom */}
         <div className="flex items-center gap-2 px-4 pointer-events-none">
           <Coffee className="h-4 w-4 text-neutral-400" />
@@ -32,26 +35,26 @@ export default function MainLayout() {
         </div>
 
         {/* Zone extensible (draggable) */}
-        <div className="flex-1" />
+        <div data-tauri-drag-region className="flex-1" />
 
         {/* Boutons fenêtre */}
         <div className="no-drag-region flex h-full">
           <button
-            onClick={() => window.api.minimizeWindow()}
+            onClick={() => appWindow.minimize()}
             className="flex items-center justify-center w-11 h-full hover:bg-neutral-700 transition-colors"
             aria-label="Réduire"
           >
             <Minus className="h-3.5 w-3.5" />
           </button>
           <button
-            onClick={() => window.api.maximizeWindow()}
+            onClick={() => appWindow.toggleMaximize()}
             className="flex items-center justify-center w-11 h-full hover:bg-neutral-700 transition-colors"
             aria-label={maximized ? 'Restaurer' : 'Agrandir'}
           >
             <Square className="h-3 w-3" />
           </button>
           <button
-            onClick={() => window.api.closeWindow()}
+            onClick={() => appWindow.close()}
             className="flex items-center justify-center w-11 h-full hover:bg-red-500 transition-colors"
             aria-label="Fermer"
           >
