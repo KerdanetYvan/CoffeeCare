@@ -1,12 +1,12 @@
 import { useState } from 'react';
-import { ScanSearch, Download, CheckSquare, Square, Package, Cpu, AlertCircle, CheckCircle2, XCircle, RefreshCw, Power } from 'lucide-react';
+import { ScanSearch, Download, CheckSquare, Square, Package, Cpu, AlertCircle, CheckCircle2, XCircle, RefreshCw, Power, TriangleAlert } from 'lucide-react';
 import { Channel, invoke } from '@tauri-apps/api/core';
-import type { SoftwareUpdate, DriverUpdate, InstallResult, UpdatesListResult, SwProgress, StreamResult, ElevatedInstallResult, CloseAppResult } from '../types/commands';
+import type { SoftwareUpdate, DriverUpdate, InstallResult, UpdatesListResult, SwProgress, Verification, StreamResult, ElevatedInstallResult, CloseAppResult } from '../types/commands';
 
 type PagePhase    = 'idle' | 'scanning' | 'results';
 type InstallPhase = 'idle' | 'installing' | 'done';
 type SwStatus = 'installing' | 'ok' | 'error';
-interface SwItem { status: SwStatus; reason?: string; reboot?: 'app' | 'system'; closeMsg?: string }
+interface SwItem { status: SwStatus; reason?: string; reboot?: 'app' | 'system'; verification?: Verification; closeMsg?: string }
 
 function formatMB(mb: number): string {
   if (mb < 1)    return '< 1 Mo';
@@ -74,15 +74,15 @@ export default function Updates() {
 
     const packages = swList
       .filter(p => selectedSw.has(p.id))
-      .map(p => ({ id: p.id, name: p.name }));
+      .map(p => ({ id: p.id, name: p.name, currentVersion: p.currentVersion }));
 
     setSwInstall('installing');
     setSwItemStatus(new Map());
     setLogFile(null);
 
     const onProgress = new Channel<SwProgress>();
-    onProgress.onmessage = ({ id, status, reason, reboot }) => {
-      setSwItemStatus(prev => new Map(prev).set(id, { status, reason, reboot }));
+    onProgress.onmessage = ({ id, status, reason, reboot, verification }) => {
+      setSwItemStatus(prev => new Map(prev).set(id, { status, reason, reboot, verification }));
     };
 
     const result = await invoke<StreamResult>('updates_install_software_stream', { packages, onProgress });
@@ -131,7 +131,8 @@ export default function Updates() {
     : swList.filter(p => selectedSw.has(p.id));
 
   // Compteurs pour le résumé en phase done
-  const okCount  = [...swItemStatus.values()].filter(s => s.status === 'ok').length;
+  const staleCount = [...swItemStatus.values()].filter(s => s.status === 'ok' && s.verification === 'still_outdated').length;
+  const okCount  = [...swItemStatus.values()].filter(s => s.status === 'ok').length - staleCount;
   const errCount = [...swItemStatus.values()].filter(s => s.status === 'error').length;
 
   return (
@@ -247,7 +248,8 @@ export default function Updates() {
                             {status === 'installing' && (
                               <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-neutral-900" />
                             )}
-                            {status === 'ok'    && <CheckCircle2 className="h-5 w-5 text-green-500" />}
+                            {status === 'ok' && item?.verification !== 'still_outdated' && <CheckCircle2 className="h-5 w-5 text-green-500" />}
+                            {status === 'ok' && item?.verification === 'still_outdated' && <TriangleAlert className="h-5 w-5 text-amber-500" />}
                             {status === 'error' && <XCircle      className="h-5 w-5 text-red-500"   />}
                           </span>
                         )}
@@ -274,7 +276,10 @@ export default function Updates() {
                               {swInstall === 'idle'    && pkg.id}
                               {isPending               && 'En attente…'}
                               {status === 'installing' && 'Installation…'}
-                              {status === 'ok'         && 'Mis à jour'}
+                              {status === 'ok' && item?.verification === 'confirmed'      && 'Mis à jour — version confirmée'}
+                              {status === 'ok' && item?.verification === 'still_outdated' && "Installé, mais l'ancienne version est toujours détectée"}
+                              {status === 'ok' && item?.verification === 'unverifiable'   && 'Mis à jour (la version ne peut pas être vérifiée)'}
+                              {status === 'ok' && !item?.verification                     && 'Mis à jour'}
                               {status === 'error'      && (item?.reason ?? 'Échec de la mise à jour')}
                             </p>
                             {status === 'error' && item?.reason === 'Droits administrateur probablement requis' && (
@@ -282,12 +287,13 @@ export default function Updates() {
                                 onClick={async (e) => {
                                   e.stopPropagation();
                                   setSwItemStatus(prev => new Map(prev).set(pkg.id, { status: 'installing' }));
-                                  const result = await invoke<ElevatedInstallResult>('updates_install_elevated', { pkg: { id: pkg.id, name: pkg.name } });
+                                  const result = await invoke<ElevatedInstallResult>('updates_install_elevated', { pkg: { id: pkg.id, name: pkg.name, currentVersion: pkg.currentVersion } });
                                   if (result.logFile) setLogFile(result.logFile);
                                   setSwItemStatus(prev => new Map(prev).set(pkg.id, {
                                     status: result.ok ? 'ok' : 'error',
                                     reason: result.reason,
                                     reboot: result.reboot,
+                                    verification: result.verification,
                                   }));
                                 }}
                                 className="text-xs text-neutral-500 underline underline-offset-2 hover:text-neutral-900 transition-colors mt-0.5"
@@ -351,7 +357,11 @@ export default function Updates() {
                         {okCount > 0 && (
                           <><span className="font-medium">{okCount}</span> mis à jour</>
                         )}
-                        {okCount > 0 && errCount > 0 && ' · '}
+                        {okCount > 0 && staleCount > 0 && ' · '}
+                        {staleCount > 0 && (
+                          <><span className="font-medium">{staleCount}</span> à vérifier</>
+                        )}
+                        {(okCount > 0 || staleCount > 0) && errCount > 0 && ' · '}
                         {errCount > 0 && (
                           <><span className="font-medium">{errCount}</span> échec{errCount > 1 ? 's' : ''}</>
                         )}
@@ -361,7 +371,7 @@ export default function Updates() {
                           onClick={() => invoke('shell_open_log', { path: logFile })}
                           className="text-sm text-neutral-500 underline underline-offset-2 hover:text-neutral-900 transition-colors"
                         >
-                          Voir le rapport d'erreur
+                          Voir le rapport
                         </button>
                       )}
                     </div>

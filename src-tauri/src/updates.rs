@@ -16,6 +16,7 @@ use tauri::{AppHandle, Manager};
 const LIST_TIMEOUT: Duration = Duration::from_secs(60);
 const SOURCE_UPDATE_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+const VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
 const ELEVATED_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 const DRIVER_SCAN_TIMEOUT: Duration = Duration::from_secs(60);
 const DRIVER_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -331,6 +332,9 @@ pub async fn updates_install_drivers() -> Result<InstallResult, String> {
 pub struct Package {
     id: String,
     name: String,
+    /// Version installée avant la mise à jour, telle qu'affichée par l'analyse.
+    #[serde(default, rename = "currentVersion")]
+    current_version: Option<String>,
 }
 
 /// Un identifiant est un seul mot, sans caractère de contrôle ni tiret initial (ce serait
@@ -341,6 +345,95 @@ fn is_valid_package_id(id: &str) -> bool {
         && id.chars().count() <= 200
         && !id.starts_with('-')
         && !id.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Ce que révèle une nouvelle lecture de la version après une installation réussie.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum Verification {
+    /// Le programme n'apparaît plus comme ayant une mise à jour : la nouvelle version est bien là.
+    Confirmed,
+    /// Le programme est toujours listé avec une mise à jour : l'ancienne version est encore détectée.
+    StillOutdated,
+    /// Impossible de conclure (version jamais détectable, programme non reconnu, vérification échouée).
+    Unverifiable,
+}
+
+/// Les versions que le gestionnaire ne sait pas lire : « Unknown », « < 1.2.3 »…
+fn is_version_unknown(version: &str) -> bool {
+    let v = version.trim().to_lowercase();
+    v.is_empty() || v == "unknown" || v == "inconnu" || v.starts_with('<')
+}
+
+/// Nombre de colonnes de l'en-tête du tableau (0 s'il n'y en a pas). Sans mise à jour en
+/// attente, le gestionnaire n'affiche pas la colonne « Disponible ».
+fn table_column_count(output: &str) -> usize {
+    let lines: Vec<&str> = output
+        .split(['\r', '\n'])
+        .filter(|l| !l.is_empty())
+        .collect();
+    let separator = lines.iter().position(|l| {
+        let t = l.trim();
+        t.len() >= 20 && t.chars().take(20).all(|c| c == '-')
+    });
+    match separator {
+        Some(sep) if sep >= 1 => lines[sep - 1].split_whitespace().count(),
+        _ => 0,
+    }
+}
+
+/// Analyse la sortie de `winget list --id <id> --exact` : la colonne « Disponible » n'est
+/// remplie que si une version plus récente existe.
+fn classify_verification(output: &str, id: &str, before: Option<&str>) -> Verification {
+    // Avec une colonne « Disponible », une ligne qui a une valeur dedans a une mise à jour en attente.
+    let listed = if table_column_count(output) >= 5 {
+        parse_winget_table(output)
+            .into_iter()
+            .find(|p| p.id.eq_ignore_ascii_case(id))
+    } else {
+        None
+    };
+    match listed {
+        Some(row) => {
+            if before.is_some_and(is_version_unknown) || is_version_unknown(&row.current_version) {
+                Verification::Unverifiable
+            } else {
+                Verification::StillOutdated
+            }
+        }
+        // Programme trouvé, sans mise à jour en attente : la nouvelle version est détectée.
+        None if output.to_lowercase().contains(&id.to_lowercase()) => Verification::Confirmed,
+        // Programme introuvable ou sortie incompréhensible.
+        None => Verification::Unverifiable,
+    }
+}
+
+/// Arguments de la vérification. Elle ne doit **jamais** installer quoi que ce soit : `upgrade
+/// --id` lance la mise à jour, `list` ne fait que lire.
+fn verify_args(id: &str) -> [&str; 6] {
+    [
+        "list",
+        "--id",
+        id,
+        "--exact",
+        "--accept-source-agreements",
+        "--disable-interactivity",
+    ]
+}
+
+/// Relit l'état du programme après une installation réussie.
+fn verify_install(winget: &Path, id: &str, before: Option<&str>) -> Verification {
+    match run_winget(winget, &verify_args(id), VERIFY_TIMEOUT) {
+        Ok(run) => {
+            let result = classify_verification(&run.stdout, id, before);
+            log::info!("[mises à jour] vérification de {id} : {result:?}");
+            result
+        }
+        Err(e) => {
+            log::warn!("[mises à jour] vérification de {id} impossible : {e}");
+            Verification::Unverifiable
+        }
+    }
 }
 
 fn install_args(id: &str) -> [&str; 9] {
@@ -518,6 +611,8 @@ pub struct Progress {
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reboot: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verification: Option<Verification>,
 }
 
 #[derive(Serialize)]
@@ -547,18 +642,25 @@ fn install_software_stream(
         ),
         String::new(),
     ];
-    let mut has_errors = false;
+    // Le rapport est écrit dès qu'un programme a échoué ou n'est pas confirmé.
+    let mut needs_report = false;
 
-    for Package { id, name } in packages {
+    for Package {
+        id,
+        name,
+        current_version,
+    } in packages
+    {
         emit(Progress {
             id: id.clone(),
             status: "installing",
             reason: None,
             reboot: None,
+            verification: None,
         });
 
         let Some(winget) = winget.as_ref().filter(|_| is_valid_package_id(&id)) else {
-            has_errors = true;
+            needs_report = true;
             let why = if winget.is_none() {
                 "gestionnaire introuvable"
             } else {
@@ -570,6 +672,7 @@ fn install_software_stream(
                 status: "error",
                 reason: Some(GENERIC_ERROR.into()),
                 reboot: None,
+                verification: None,
             });
             continue;
         };
@@ -590,32 +693,49 @@ fn install_software_stream(
         );
 
         if ok {
-            let note = match reboot {
-                Some("system") => " (redémarrage PC requis)",
-                Some(_) => " (redémarrage logiciel requis)",
-                None => "",
+            // Après un redémarrage, la version n'est relue qu'au prochain lancement de Windows :
+            // inutile de vérifier tout de suite.
+            let verification = match reboot {
+                None => Some(verify_install(winget, &id, current_version.as_deref())),
+                Some(_) => None,
             };
-            lines.push(format!("✓ {name} ({id}) — Mis à jour{note}"));
+            let note = match (reboot, verification) {
+                (Some("system"), _) => " (redémarrage PC requis)",
+                (Some(_), _) => " (redémarrage logiciel requis)",
+                (None, Some(Verification::Confirmed)) => " (version confirmée)",
+                (None, Some(Verification::Unverifiable)) => " (non vérifiable)",
+                _ => "",
+            };
+            if verification == Some(Verification::StillOutdated) {
+                needs_report = true;
+                lines.push(format!(
+                    "⚠ {name} ({id}) — Installé, mais l'ancienne version est toujours détectée"
+                ));
+            } else {
+                lines.push(format!("✓ {name} ({id}) — Mis à jour{note}"));
+            }
             emit(Progress {
                 id,
                 status: "ok",
                 reason: None,
                 reboot,
+                verification,
             });
         } else {
-            has_errors = true;
+            needs_report = true;
             lines.push(report_failure(&name, &id, "Échec", code, &captured));
             emit(Progress {
                 id,
                 status: "error",
                 reason: Some(extract_reason(&captured, code)),
                 reboot: None,
+                verification: None,
             });
         }
     }
 
     StreamResult {
-        log_file: if has_errors {
+        log_file: if needs_report {
             write_report(report_dir, &lines)
         } else {
             None
@@ -653,6 +773,8 @@ pub struct ElevatedResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     reboot: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    verification: Option<Verification>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     log_file: Option<String>,
 }
 
@@ -661,6 +783,7 @@ fn refused(reason: &str) -> ElevatedResult {
         ok: false,
         reason: Some(reason.into()),
         reboot: None,
+        verification: None,
         log_file: None,
     }
 }
@@ -672,7 +795,11 @@ fn install_elevated(app: &AppHandle, pkg: Package) -> ElevatedResult {
     if !is_valid_package_id(&pkg.id) {
         return refused(GENERIC_ERROR);
     }
-    let Package { id, name } = pkg;
+    let Package {
+        id,
+        name,
+        current_version,
+    } = pkg;
 
     // Le script élevé écrit le code de sortie et la sortie dans un seul fichier JSON.
     let (launched, result) = ps::run_elevated_with_result(ELEVATED_INSTALL_TIMEOUT, |result| {
@@ -707,10 +834,15 @@ $code = $LASTEXITCODE
         if ok { "OK" } else { "ÉCHEC" }
     );
     if ok {
+        let reboot = detect_reboot(code, &output);
         return ElevatedResult {
             ok: true,
             reason: None,
-            reboot: detect_reboot(code, &output),
+            reboot,
+            verification: match reboot {
+                None => Some(verify_install(&winget, &id, current_version.as_deref())),
+                Some(_) => None,
+            },
             log_file: None,
         };
     }
@@ -735,6 +867,7 @@ $code = $LASTEXITCODE
         ok: false,
         reason: Some(reason),
         reboot: None,
+        verification: None,
         log_file,
     }
 }
@@ -1030,10 +1163,12 @@ mod tests {
                 Package {
                     id: "Zzz.PaquetInexistant.Test".into(),
                     name: "Faux programme".into(),
+                    current_version: None,
                 },
                 Package {
                     id: "--force".into(),
                     name: "Option piégée".into(),
+                    current_version: None,
                 },
             ],
             &move |p| {
@@ -1062,6 +1197,109 @@ mod tests {
             report.contains("identifiant invalide"),
             "l'option piégée doit être refusée"
         );
+    }
+
+    /// Sortie réelle de `winget list` pour un programme à jour : pas de colonne « Disponible ».
+    fn up_to_date_row() -> String {
+        format!(
+            "{:<25}{:<22}{:<12}{}\r\n{}\r\n{:<25}{:<22}{:<12}{}\r\n",
+            "Nom",
+            "ID",
+            "Version",
+            "Source",
+            "-".repeat(79),
+            "Git",
+            "Git.Git",
+            "2.56.0.4",
+            "winget"
+        )
+    }
+
+    #[test]
+    fn verification_reads_the_table_after_install() {
+        // Toujours listé avec une version disponible : l'ancienne version est encore là.
+        assert_eq!(
+            classify_verification(&table(), "Git.Git", Some("2.45.0")),
+            Verification::StillOutdated
+        );
+        // L'identifiant se compare sans tenir compte des majuscules.
+        assert_eq!(
+            classify_verification(&table(), "git.git", Some("2.45.0")),
+            Verification::StillOutdated
+        );
+        // Trouvé, sans version plus récente (pas de colonne « Disponible ») : confirmé.
+        // Régression : la colonne « Source » ne doit pas être prise pour une version disponible.
+        assert_eq!(
+            classify_verification(&up_to_date_row(), "Git.Git", Some("2.45.0")),
+            Verification::Confirmed
+        );
+    }
+
+    #[test]
+    fn verification_gives_up_when_it_cannot_tell() {
+        // Version installée jamais lisible : le programme sera toujours listé.
+        let unknown = format!(
+            "{}{:<25}{:<22}{:<12}{:<12}winget\r\n",
+            table(),
+            "Truc",
+            "Truc.Truc",
+            "Unknown",
+            "2.0"
+        );
+        assert_eq!(
+            classify_verification(&unknown, "Truc.Truc", Some("Unknown")),
+            Verification::Unverifiable
+        );
+        assert_eq!(
+            classify_verification(&table(), "Git.Git", Some("< 2.0")),
+            Verification::Unverifiable
+        );
+        // Programme que le gestionnaire ne retrouve pas, ou sortie vide.
+        for output in [
+            "Aucun package installé ne correspond aux critères saisis.",
+            "No installed package found matching input criteria.",
+            "",
+        ] {
+            assert_eq!(
+                classify_verification(output, "Foo.Bar", Some("1.0")),
+                Verification::Unverifiable,
+                "{output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn verification_never_installs() {
+        let args = verify_args("Git.Git");
+        assert_eq!(args[0], "list");
+        assert!(!args.contains(&"upgrade") && !args.contains(&"install"));
+        // À l'inverse, l'installation, elle, est bien une mise à jour.
+        assert_eq!(install_args("Git.Git")[0], "upgrade");
+    }
+
+    #[test]
+    fn unknown_versions_are_recognised() {
+        for v in ["Unknown", "unknown", "Inconnu", "", "  ", "< 175.1.0.13416"] {
+            assert!(is_version_unknown(v), "{v:?}");
+        }
+        for v in ["1.0", "2.45.0", "26.001.21789"] {
+            assert!(!is_version_unknown(v), "{v:?}");
+        }
+    }
+
+    /// À lancer à la main (`cargo test -- --ignored --nocapture`) : lit de vrais programmes.
+    #[test]
+    #[ignore]
+    fn verification_on_this_machine() {
+        let winget = find_winget().expect("winget");
+        for (id, before) in [
+            ("Git.Git", Some("2.0.0")),
+            ("Blizzard.BattleNet", Some("Unknown")),
+            ("Microsoft.VisualStudioCode", Some("1.0.0")),
+            ("Zzz.PaquetInexistant", None),
+        ] {
+            println!("{id} -> {:?}", verify_install(&winget, id, before));
+        }
     }
 
     #[test]

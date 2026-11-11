@@ -189,11 +189,15 @@ export interface SettingsInfo {
   openAtLogin: boolean;
 }
 
+/** Résultat de la relecture de la version après une installation réussie. */
+export type Verification = 'confirmed' | 'still_outdated' | 'unverifiable';
+
 export interface SwProgress {
   id: string;
   status: 'installing' | 'ok' | 'error';
   reason?: string;
   reboot?: 'app' | 'system';
+  verification?: Verification;
 }
 
 export interface StreamResult {
@@ -204,6 +208,7 @@ export interface ElevatedInstallResult {
   ok: boolean;
   reason?: string;
   reboot?: 'app' | 'system';
+  verification?: Verification;
   logFile?: string;
 }
 
