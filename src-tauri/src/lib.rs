@@ -1,3 +1,4 @@
+mod diagnose;
 mod hidden;
 mod proc;
 mod ps;

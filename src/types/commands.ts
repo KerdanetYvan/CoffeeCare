@@ -202,10 +202,14 @@ export interface SettingsInfo {
 /** Résultat de la relecture de la version après une installation réussie. */
 export type Verification = 'confirmed' | 'still_outdated' | 'unverifiable';
 
+/** Type d'échec d'une installation : dit à l'interface quel bouton proposer. */
+export type FailureKind = 'needs_permission' | 'close_app' | 'retry_later' | 'update_manually' | 'other';
+
 export interface SwProgress {
   id: string;
   status: 'installing' | 'ok' | 'error';
   reason?: string;
+  kind?: FailureKind;
   reboot?: 'app' | 'system';
   verification?: Verification;
 }
@@ -217,6 +221,7 @@ export interface StreamResult {
 export interface ElevatedInstallResult {
   ok: boolean;
   reason?: string;
+  kind?: FailureKind;
   reboot?: 'app' | 'system';
   verification?: Verification;
   logFile?: string;

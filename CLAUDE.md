@@ -77,6 +77,7 @@ src-tauri/
     scan.rs            # Analyse et nettoyage des dossiers temporaires
     repair.rs          # Services, fichiers système, périphériques, registre, démarrage, disques
     updates.rs         # Logiciels (winget), pilotes (Windows Update), rapports d'échec
+    diagnose.rs        # Échecs d'installation : message simple + type (bouton à proposer)
     settings.rs        # Version, lancement avec Windows, ouverture d'un rapport
     hidden.rs          # Programmes masqués dans les mises à jour (hidden-updates.json)
     ps.rs              # PowerShell : normal, administrateur, résultat, échappement
@@ -122,7 +123,7 @@ Toutes les pages sont chargées en **lazy** via `React.lazy()` + `<Suspense>`.
 
 Cette règle s'applique à tous les textes UI : titres, descriptions, boutons, messages d'état, bandeaux d'erreur, warnings, y compris les messages d'erreur renvoyés par le Rust et les rapports d'échec ouverts par l'utilisateur.
 
-Exception : l'interface teste certains textes renvoyés par le Rust (ex. « Droits administrateur probablement requis » affiche le bouton de nouvel essai avec autorisation dans `Updates.tsx`). Ne pas les reformuler d'un côté seulement.
+Les messages d'échec des mises à jour viennent de `diagnose.rs` (un message en français simple + un type d'échec `kind`). L'interface choisit ses boutons d'après le **type** (`needs_permission` → « Réessayer avec autorisation », `close_app` → « Fermer l'application »), jamais d'après le texte : on peut reformuler un message sans rien casser. Pour un nouveau cas d'échec, ajouter une règle dans `diagnose.rs` avec son test.
 
 ## Conventions de code
 
