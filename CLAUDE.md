@@ -153,6 +153,7 @@ Les messages d'échec des mises à jour viennent de `diagnose.rs` (un message en
 - Pas de détail technique dans les messages destinés à l'utilisateur : logger le détail avec `log::warn!` et renvoyer un message simple.
 - Chaque module contient ses tests. Les analyses en lecture seule sont testées sur la vraie machine ; les corrections (qui demandent les droits administrateur) sont couvertes par des tests de validation des entrées.
 - Un test dont le résultat dépend de la machine (winget absent, etc.) doit s'ignorer proprement plutôt qu'échouer.
+- **Délais** : un délai dépassé arrête le processus **et ses enfants** (`proc::kill_tree`), sinon l'installateur lancé par winget continue seul et bloque le nouvel essai. Les durées des installations sont réglables (`InstallTimings`) pour pouvoir tester les cas lents avec un faux gestionnaire de paquets (script `.cmd`) sans toucher aux programmes de la machine.
 - **winget : lire ne veut pas dire `upgrade`.** `winget upgrade --id X` **installe** la mise à jour, même sans `--silent`. Pour lire l'état d'un programme, utiliser `winget list --id X --exact` (et `winget upgrade` sans `--id` pour lister). Un test `verification_never_installs` protège la vérification après installation. Ne jamais lancer de commande winget de mise à jour pour « essayer » sur la machine de développement.
 - Le tableau de winget n'a pas toujours la colonne « Disponible » (absente quand rien n'est à mettre à jour) : ne pas supposer 5 colonnes.
 

@@ -16,9 +16,13 @@ use tauri::{AppHandle, Manager};
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(60);
 const SOURCE_UPDATE_TIMEOUT: Duration = Duration::from_secs(30);
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+/// Les gros programmes (Docker, jeux…) mettent longtemps à se télécharger et à s'installer.
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Au bout de ce temps, l'interface prévient que l'installation est longue (ou attend peut-être
+/// l'autorisation de Windows, affichée dans la barre des tâches).
+const SLOW_INSTALL_AFTER: Duration = Duration::from_secs(60);
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
-const ELEVATED_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
+const ELEVATED_INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const DRIVER_SCAN_TIMEOUT: Duration = Duration::from_secs(60);
 const DRIVER_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -74,9 +78,20 @@ struct WingetRun {
 }
 
 fn run_winget(winget: &Path, args: &[&str], timeout: Duration) -> Result<WingetRun, String> {
+    run_winget_watched(winget, args, timeout, None, &mut || {})
+}
+
+/// Comme `run_winget`, et appelle `on_slow` une fois si la commande dure plus de `slow_after`.
+fn run_winget_watched(
+    winget: &Path,
+    args: &[&str],
+    timeout: Duration,
+    slow_after: Option<Duration>,
+    on_slow: &mut dyn FnMut(),
+) -> Result<WingetRun, String> {
     let mut cmd = proc::hidden(&winget.to_string_lossy());
     cmd.args(args);
-    match proc::capture(cmd, timeout) {
+    match proc::capture_watched(cmd, timeout, slow_after, on_slow) {
         Ok(Some(c)) => {
             let stdout = String::from_utf8_lossy(&c.stdout).into_owned();
             let stderr = String::from_utf8_lossy(&c.stderr);
@@ -640,6 +655,9 @@ pub struct Progress {
     reboot: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     verification: Option<Verification>,
+    /// Vrai quand l'installation dure : l'interface le signale à l'utilisateur.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slow: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -658,7 +676,39 @@ fn install_software_stream(
     if packages.is_empty() {
         return StreamResult { log_file: None };
     }
-    let winget = find_winget();
+    install_with(
+        packages,
+        find_winget(),
+        &InstallTimings::default(),
+        emit,
+        report_dir,
+    )
+}
+
+/// Durées de l'installation, réglables pour les tests.
+struct InstallTimings {
+    /// Au-delà, l'installation est arrêtée.
+    timeout: Duration,
+    /// Au-delà, l'interface est prévenue que l'installation est longue.
+    slow_after: Duration,
+}
+
+impl Default for InstallTimings {
+    fn default() -> Self {
+        InstallTimings {
+            timeout: INSTALL_TIMEOUT,
+            slow_after: SLOW_INSTALL_AFTER,
+        }
+    }
+}
+
+fn install_with(
+    packages: Vec<Package>,
+    winget: Option<PathBuf>,
+    timings: &InstallTimings,
+    emit: &dyn Fn(Progress),
+    report_dir: Option<&Path>,
+) -> StreamResult {
     let mut lines = vec![
         report_header(),
         format!(
@@ -685,6 +735,7 @@ fn install_software_stream(
             kind: None,
             reboot: None,
             verification: None,
+            slow: None,
         });
 
         let Some(winget) = winget.as_ref().filter(|_| is_valid_package_id(&id)) else {
@@ -702,11 +753,29 @@ fn install_software_stream(
                 kind: Some(FailureKind::Other),
                 reboot: None,
                 verification: None,
+                slow: None,
             });
             continue;
         };
 
-        let (code, captured) = match run_winget(winget, &install_args(&id), INSTALL_TIMEOUT) {
+        let result = run_winget_watched(
+            winget,
+            &install_args(&id),
+            timings.timeout,
+            Some(timings.slow_after),
+            &mut || {
+                emit(Progress {
+                    id: id.clone(),
+                    status: "installing",
+                    reason: None,
+                    kind: None,
+                    reboot: None,
+                    verification: None,
+                    slow: Some(true),
+                });
+            },
+        );
+        let (code, captured) = match result {
             Ok(run) => (run.code, run.combined),
             Err(e) => (-1, e),
         };
@@ -750,6 +819,7 @@ fn install_software_stream(
                 kind: None,
                 reboot,
                 verification,
+                slow: None,
             });
         } else {
             needs_report = true;
@@ -762,6 +832,7 @@ fn install_software_stream(
                 kind: Some(diagnosis.kind),
                 reboot: None,
                 verification: None,
+                slow: None,
             });
         }
     }
@@ -1370,6 +1441,126 @@ mod tests {
         ] {
             println!("{id} -> {:?}", verify_install(&winget, id, before));
         }
+    }
+
+    /// Faux gestionnaire de paquets : `upgrade` attend `seconds` secondes (un programme lancé
+    /// par lui attend aussi), `list` répond tout de suite.
+    fn fake_winget(name: &str, seconds: u32, marker: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("cleaner_pc_fake_{name}_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("winget.cmd");
+        std::fs::write(
+            &script,
+            format!(
+                "@echo off\r\nif \"%1\"==\"upgrade\" ping -n {} {marker} >nul\r\nexit /b 0\r\n",
+                seconds + 1
+            ),
+        )
+        .unwrap();
+        script
+    }
+
+    fn run_fake(winget: &Path, timings: &InstallTimings) -> (Vec<String>, StreamResult, Duration) {
+        use std::sync::{Arc, Mutex};
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&events);
+        let dir = winget.parent().unwrap().to_path_buf();
+        let started = std::time::Instant::now();
+        let res = install_with(
+            vec![Package {
+                id: "Test.Programme".into(),
+                name: "Programme de test".into(),
+                current_version: Some("1.0".into()),
+            }],
+            Some(winget.to_path_buf()),
+            timings,
+            &move |p| {
+                sink.lock()
+                    .unwrap()
+                    .push(serde_json::to_string(&p).unwrap())
+            },
+            Some(&dir),
+        );
+        let events = events.lock().unwrap().clone();
+        (events, res, started.elapsed())
+    }
+
+    #[test]
+    fn a_long_installation_warns_once_then_succeeds() {
+        let fake = fake_winget("slow", 4, "127.0.0.7");
+        let timings = InstallTimings {
+            timeout: Duration::from_secs(30),
+            slow_after: Duration::from_secs(1),
+        };
+        let (events, res, _) = run_fake(&fake, &timings);
+        println!("{events:#?}");
+        let slow = events
+            .iter()
+            .filter(|e| e.contains("\"slow\":true"))
+            .count();
+        assert_eq!(slow, 1, "un seul avertissement « installation longue »");
+        assert!(events.first().unwrap().contains("\"installing\""));
+        assert!(
+            events.last().unwrap().contains("\"status\":\"ok\""),
+            "{events:?}"
+        );
+        assert!(
+            res.log_file.is_none(),
+            "aucun rapport pour une installation réussie"
+        );
+        let _ = std::fs::remove_dir_all(fake.parent().unwrap());
+    }
+
+    #[test]
+    fn a_quick_installation_never_warns() {
+        let fake = fake_winget("quick", 1, "127.0.0.6");
+        let timings = InstallTimings {
+            timeout: Duration::from_secs(30),
+            slow_after: Duration::from_secs(20),
+        };
+        let (events, _, _) = run_fake(&fake, &timings);
+        assert!(!events.iter().any(|e| e.contains("slow")), "{events:?}");
+        assert!(events.last().unwrap().contains("\"status\":\"ok\""));
+        let _ = std::fs::remove_dir_all(fake.parent().unwrap());
+    }
+
+    #[test]
+    fn an_installation_that_never_ends_is_stopped_cleanly_and_explained() {
+        let marker = "127.0.0.5";
+        let fake = fake_winget("stuck", 60, marker);
+        let timings = InstallTimings {
+            timeout: Duration::from_secs(3),
+            slow_after: Duration::from_secs(1),
+        };
+        let (events, res, elapsed) = run_fake(&fake, &timings);
+        println!("{events:#?}");
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "doit s'arrêter vite : {elapsed:?}"
+        );
+
+        let last = events.last().unwrap();
+        assert!(last.contains("\"status\":\"error\""), "{last}");
+        assert!(
+            last.contains("trop de temps"),
+            "message clair attendu : {last}"
+        );
+        assert!(last.contains("\"kind\":\"retry_later\""), "{last}");
+        let report = std::fs::read_to_string(res.log_file.expect("un rapport")).unwrap();
+        assert!(report.contains("Programme de test"));
+
+        // Rien ne tourne encore : le programme lancé par l'installation a été arrêté avec elle.
+        std::thread::sleep(Duration::from_secs(1));
+        let out = ps::run(
+            &format!(
+                "(Get-CimInstance Win32_Process -Filter \"Name='PING.EXE'\" | Where-Object {{ $_.CommandLine -like '*{marker}*' }} | Measure-Object).Count"
+            ),
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        assert_eq!(out, "0", "l'installation a laissé un programme en cours");
+        let _ = std::fs::remove_dir_all(fake.parent().unwrap());
     }
 
     #[test]
