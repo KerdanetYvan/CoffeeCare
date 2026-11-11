@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 /**
@@ -6,15 +7,13 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
  * `window.api.*`. Sous Electron, c'est le preload qui le fournit ; sous Tauri,
  * ce fichier le construit au-dessus de `invoke()`.
  *
- * Les fonctions pas encore portées en Rust échouent avec un message clair.
  * À supprimer quand les pages appelleront directement `invoke()`.
  */
 
 type Api = Window['api'];
 
-function notPorted(name: string) {
-  return () => Promise.reject(new Error(`Fonction pas encore disponible : ${name}`));
-}
+/** Écouteurs de progression : leur inscription est asynchrone, on l'attend avant d'installer. */
+let progressListeners: Promise<UnlistenFn>[] = [];
 
 export function installTauriApi(): void {
   if (window.api || !isTauri()) return;
@@ -30,15 +29,24 @@ export function installTauriApi(): void {
     deleteDirs: (paths) => invoke('clean_delete_dirs', { paths }),
 
     // Mises à jour
-    getSoftwareUpdates: notPorted('getSoftwareUpdates'),
-    getDriverUpdates: notPorted('getDriverUpdates'),
-    installSoftwareStream: notPorted('installSoftwareStream'),
-    onSwProgress: () => {},
-    offSwProgress: () => {},
+    getSoftwareUpdates: () => invoke('updates_get_software'),
+    getDriverUpdates: () => invoke('updates_get_drivers'),
+    installSoftwareStream: async (packages) => {
+      await Promise.all(progressListeners);
+      return invoke('updates_install_software_stream', { packages });
+    },
+    onSwProgress: (cb) => {
+      progressListeners.push(listen<Parameters<typeof cb>[0]>('updates:swProgress', (e) => cb(e.payload)));
+    },
+    offSwProgress: () => {
+      const listeners = progressListeners;
+      progressListeners = [];
+      listeners.forEach((l) => void l.then((unlisten) => unlisten()));
+    },
     openLogFile: (path) => invoke('shell_open_log', { path }),
-    installElevated: notPorted('installElevated'),
-    closeRelatedApp: notPorted('closeRelatedApp'),
-    installDrivers: notPorted('installDrivers'),
+    installElevated: (pkg) => invoke('updates_install_elevated', { pkg }),
+    closeRelatedApp: (pkg) => invoke('updates_close_related_app', { pkg: { name: pkg.name } }),
+    installDrivers: () => invoke('updates_install_drivers'),
 
     // Réparation
     getServices: () => invoke('repair_get_services'),

@@ -4,6 +4,7 @@ mod repair;
 mod scan;
 mod settings;
 mod system;
+mod updates;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -47,6 +48,12 @@ pub fn run() {
             repair::repair_set_startup_items,
             repair::repair_get_disk_health,
             repair::repair_schedule_disk_check,
+            updates::updates_get_software,
+            updates::updates_get_drivers,
+            updates::updates_install_drivers,
+            updates::updates_install_software_stream,
+            updates::updates_install_elevated,
+            updates::updates_close_related_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

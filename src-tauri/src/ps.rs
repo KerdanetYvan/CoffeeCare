@@ -50,9 +50,9 @@ pub fn run(script: &str, timeout: Duration) -> Result<String, String> {
         "-EncodedCommand",
         &encode(&format!("{PRELUDE}{script}")),
     ]);
-    match proc::output_with_timeout(cmd, timeout) {
-        Ok(Some((status, out))) if status.success() => Ok(clean_output(&out)),
-        Ok(Some((status, _))) => Err(format!("PowerShell a échoué ({:?})", status.code())),
+    match proc::capture(cmd, timeout) {
+        Ok(Some(c)) if c.status.success() => Ok(clean_output(&c.stdout)),
+        Ok(Some(c)) => Err(format!("PowerShell a échoué ({:?})", c.status.code())),
         Ok(None) => Err("délai dépassé".into()),
         Err(e) => Err(e.to_string()),
     }

@@ -142,7 +142,7 @@ export default function Updates() {
         <div>
           <h1 className="text-2xl font-semibold">Mises à jour</h1>
           <p className="text-sm text-neutral-500 mt-0.5">
-            Logiciels via winget · Pilotes via Windows Update
+            Logiciels et pilotes de votre PC
           </p>
         </div>
 
@@ -185,7 +185,7 @@ export default function Updates() {
             {swError && (
               <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 text-sm text-red-700">
                 <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                <span>winget indisponible — {swError}</span>
+                <span>Analyse impossible — {swError}</span>
               </div>
             )}
 
@@ -386,7 +386,7 @@ export default function Updates() {
             {drError && (
               <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 text-sm text-red-700">
                 <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                <span>Erreur Windows Update — {drError}</span>
+                <span>Analyse impossible — {drError}</span>
               </div>
             )}
 
