@@ -6,6 +6,9 @@
   "main": ".vite/build/main.js",
   "scripts": {
     "dev": "electron-forge start",
+    "lint": "eslint .",
+    "typecheck": "tsc -b",
+    "build:web": "vite build",
     "build": "electron-forge package",
     "make": "electron-forge make",
     "publish": "electron-forge publish"
