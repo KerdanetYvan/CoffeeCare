@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { SettingsInfo } from '../types/commands';
-import { Moon, Rocket, Info, Sparkles, Globe, Clock, BarChart2, ExternalLink } from 'lucide-react';
+import { Moon, Rocket, Info, Sparkles, Globe, Clock, BarChart2, ExternalLink, RefreshCw } from 'lucide-react';
 
 function SectionDivider() {
   return <div className="border-t border-neutral-200" />;
@@ -49,13 +49,26 @@ export default function Settings() {
   const [version,     setVersion]     = useState<string>('…');
   const [openAtLogin, setOpenAtLogin] = useState(false);
   const [toggling,    setToggling]    = useState(false);
+  const [hiddenCount, setHiddenCount] = useState(0);
+  const [hiddenError, setHiddenError] = useState(false);
 
   useEffect(() => {
     invoke<SettingsInfo>('settings_get_info').then(info => {
       setVersion(info.version);
       setOpenAtLogin(info.openAtLogin);
     });
+    invoke<string[]>('updates_get_hidden').then(ids => setHiddenCount(ids.length)).catch(() => {});
   }, []);
+
+  const showAgainAll = async () => {
+    try {
+      await invoke<string[]>('updates_unhide_all');
+      setHiddenCount(0);
+      setHiddenError(false);
+    } catch {
+      setHiddenError(true);
+    }
+  };
 
   const handleLoginItem = async (v: boolean) => {
     setToggling(true);
@@ -101,6 +114,36 @@ export default function Settings() {
           onChange={handleLoginItem}
           loading={toggling}
         />
+      </div>
+
+      <SectionDivider />
+
+      {/* ══ Mises à jour ═══════════════════════════════════════════════════════ */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <RefreshCw className="h-5 w-5 text-neutral-600" />
+          <h2 className="text-lg font-semibold">Mises à jour</h2>
+        </div>
+        <div className="flex items-center justify-between gap-6 py-1">
+          <div>
+            <p className="font-medium text-sm text-neutral-900">Programmes masqués</p>
+            <p className="text-xs text-neutral-400 mt-0.5">
+              {hiddenCount === 0
+                ? "Aucun programme masqué : tous les programmes à mettre à jour vous sont proposés"
+                : `${hiddenCount} programme${hiddenCount > 1 ? 's ne vous sont plus proposés' : ' ne vous est plus proposé'}`}
+            </p>
+            {hiddenError && (
+              <p className="text-xs text-red-600 mt-0.5">Une erreur est survenue, réessayez</p>
+            )}
+          </div>
+          <button
+            onClick={showAgainAll}
+            disabled={hiddenCount === 0}
+            className="flex-shrink-0 px-3 py-1.5 text-sm bg-neutral-900 text-white hover:bg-neutral-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Tout proposer à nouveau
+          </button>
+        </div>
       </div>
 
       <SectionDivider />

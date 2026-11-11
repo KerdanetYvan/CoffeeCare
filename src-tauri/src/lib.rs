@@ -1,3 +1,4 @@
+mod hidden;
 mod proc;
 mod ps;
 mod repair;
@@ -59,6 +60,10 @@ pub fn run() {
             repair::repair_get_disk_health,
             repair::repair_schedule_disk_check,
             updates::updates_get_software,
+            updates::updates_get_hidden,
+            updates::updates_hide,
+            updates::updates_unhide,
+            updates::updates_unhide_all,
             updates::updates_get_drivers,
             updates::updates_install_drivers,
             updates::updates_install_software_stream,

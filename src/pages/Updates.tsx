@@ -1,7 +1,7 @@
 import { Fragment, useState } from 'react';
-import { ScanSearch, Download, CheckSquare, Square, Package, Cpu, AlertCircle, CheckCircle2, XCircle, RefreshCw, Power, TriangleAlert } from 'lucide-react';
+import { ScanSearch, Download, CheckSquare, Square, Package, Cpu, AlertCircle, CheckCircle2, XCircle, RefreshCw, Power, TriangleAlert, ChevronDown, ChevronRight, EyeOff } from 'lucide-react';
 import { Channel, invoke } from '@tauri-apps/api/core';
-import type { SoftwareUpdate, DriverUpdate, InstallResult, UpdatesListResult, SwProgress, Verification, StreamResult, ElevatedInstallResult, CloseAppResult } from '../types/commands';
+import type { SoftwareUpdate, DriverUpdate, InstallResult, SoftwareScanResult, UpdatesListResult, SwProgress, Verification, StreamResult, ElevatedInstallResult, CloseAppResult } from '../types/commands';
 
 type PagePhase    = 'idle' | 'scanning' | 'results';
 type InstallPhase = 'idle' | 'installing' | 'done';
@@ -23,6 +23,11 @@ export default function Updates() {
 
   const [selectedSw, setSelectedSw] = useState<Set<string>>(new Set());
 
+  // Programmes que l'utilisateur a choisi de ne plus se voir proposer
+  const [hiddenList, setHiddenList] = useState<SoftwareUpdate[]>([]);
+  const [showHidden, setShowHidden] = useState(false);
+  const [hideError, setHideError]   = useState<string | null>(null);
+
   const [swInstall, setSwInstall]       = useState<InstallPhase>('idle');
   const [swItemStatus, setSwItemStatus] = useState<Map<string, SwItem>>(new Map());
   const [logFile, setLogFile]           = useState<string | null>(null);
@@ -41,11 +46,14 @@ export default function Updates() {
     setDrResult(null);
 
     const [sw, dr] = await Promise.all([
-      invoke<UpdatesListResult<SoftwareUpdate>>('updates_get_software'),
+      invoke<SoftwareScanResult>('updates_get_software'),
       invoke<UpdatesListResult<DriverUpdate>>('updates_get_drivers'),
     ]);
 
     setSwList(sw.data);
+    setHiddenList(sw.hidden ?? []);
+    setShowHidden(false);
+    setHideError(null);
     setDrList(dr.data);
     setSwError(sw.ok ? null : (sw.error ?? 'Erreur inconnue'));
     setDrError(dr.ok ? null : (dr.error ?? 'Erreur inconnue'));
@@ -58,6 +66,53 @@ export default function Updates() {
     setSelectedSw(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const byName = (a: SoftwareUpdate, b: SoftwareUpdate) => a.name.localeCompare(b.name);
+
+  const hideSw = async (pkg: SoftwareUpdate) => {
+    try {
+      await invoke<string[]>('updates_hide', { id: pkg.id });
+    } catch {
+      setHideError('Impossible de masquer ce programme, réessayez');
+      return;
+    }
+    setHideError(null);
+    setSwList(prev => prev.filter(p => p.id !== pkg.id));
+    setSelectedSw(prev => { const next = new Set(prev); next.delete(pkg.id); return next; });
+    setHiddenList(prev => [...prev, pkg].sort(byName));
+  };
+
+  const unhideSw = async (pkg: SoftwareUpdate) => {
+    try {
+      await invoke<string[]>('updates_unhide', { id: pkg.id });
+    } catch {
+      setHideError('Impossible de proposer ce programme à nouveau, réessayez');
+      return;
+    }
+    setHideError(null);
+    setHiddenList(prev => prev.filter(p => p.id !== pkg.id));
+    setSwList(prev => [...prev, pkg].sort(byName));
+    // Comme après une analyse : les versions illisibles ne sont pas présélectionnées.
+    if (!pkg.versionUnknown) setSelectedSw(prev => new Set(prev).add(pkg.id));
+  };
+
+  const unhideAllSw = async () => {
+    try {
+      await invoke<string[]>('updates_unhide_all');
+    } catch {
+      setHideError('Impossible de proposer ces programmes à nouveau, réessayez');
+      return;
+    }
+    setHideError(null);
+    const back = hiddenList;
+    setHiddenList([]);
+    setSwList(prev => [...prev, ...back].sort(byName));
+    setSelectedSw(prev => {
+      const next = new Set(prev);
+      back.filter(p => !p.versionUnknown).forEach(p => next.add(p.id));
       return next;
     });
   };
@@ -198,7 +253,9 @@ export default function Updates() {
             )}
 
             {!swError && swList.length === 0 && (
-              <p className="text-sm text-neutral-400 py-2">Tous vos logiciels sont à jour.</p>
+              <p className="text-sm text-neutral-400 py-2">
+                {hiddenList.length > 0 ? 'Aucune mise à jour proposée.' : 'Tous vos logiciels sont à jour.'}
+              </p>
             )}
 
             {swList.length > 0 && (
@@ -299,6 +356,15 @@ export default function Updates() {
                               {status === 'ok' && !item?.verification                     && 'Mis à jour'}
                               {status === 'error'      && (item?.reason ?? 'Échec de la mise à jour')}
                             </p>
+                            {swInstall === 'idle' && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); hideSw(pkg); }}
+                                className="flex items-center gap-1 text-xs text-neutral-400 hover:text-neutral-700 transition-colors mt-0.5"
+                              >
+                                <EyeOff className="h-3 w-3" />
+                                Ne plus proposer
+                              </button>
+                            )}
                             {status === 'error' && item?.reason === 'Droits administrateur probablement requis' && (
                               <button
                                 onClick={async (e) => {
@@ -400,6 +466,60 @@ export default function Updates() {
               </>
             )}
           </div>
+
+          {/* ── Logiciels masqués ── */}
+          {swInstall === 'idle' && hiddenList.length > 0 && (
+            <div className="space-y-2">
+              <button
+                onClick={() => setShowHidden(v => !v)}
+                className="flex items-center gap-1 text-sm text-neutral-600 hover:text-neutral-900 transition-colors"
+              >
+                {showHidden ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                Masqués ({hiddenList.length})
+              </button>
+              {showHidden && (
+                <div className="space-y-2">
+                  <p className="text-xs text-neutral-500">
+                    Ces programmes ne vous sont plus proposés. Vous pouvez les proposer de nouveau à tout moment.
+                  </p>
+                  <ul className="space-y-2">
+                    {hiddenList.map(pkg => (
+                      <li key={pkg.id} className="flex items-center gap-4 p-3 bg-white border border-neutral-200">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-sm">{pkg.name}</p>
+                          <p className="text-xs text-neutral-400 truncate">{pkg.id}</p>
+                        </div>
+                        <span className="text-xs text-neutral-500 flex-shrink-0">
+                          {pkg.versionUnknown ? 'Version inconnue' : pkg.currentVersion} → {pkg.availableVersion}
+                        </span>
+                        <button
+                          onClick={() => unhideSw(pkg)}
+                          className="text-xs text-neutral-600 underline underline-offset-2 hover:text-neutral-900 transition-colors flex-shrink-0"
+                        >
+                          Proposer à nouveau
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {hiddenList.length > 1 && (
+                    <button
+                      onClick={unhideAllSw}
+                      className="text-xs text-neutral-600 underline underline-offset-2 hover:text-neutral-900 transition-colors"
+                    >
+                      Tout proposer à nouveau
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {hideError && (
+            <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 text-sm text-red-700">
+              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <span>{hideError}</span>
+            </div>
+          )}
 
           {/* ── Pilotes ── */}
           <div className="space-y-3">
