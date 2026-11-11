@@ -11,6 +11,7 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,12 +20,43 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # La version de l'application vient de package.json (Tauri la lit de là) :
+      # un tag qui ne lui correspond pas produirait un installeur mal numéroté.
+      - name: Check tag matches package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Le tag ($TAG_VERSION) ne correspond pas à la version de package.json ($PKG_VERSION)"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: npm ci
 
       - name: Build installer
-        run: npm run make
+        run: npm run build
+
+      - name: Prepare installer
+        id: installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          SRC="$(ls src-tauri/target/release/bundle/nsis/*-setup.exe | head -n 1)"
+          DEST="Cleaner-PC-${VERSION}-setup.exe"
+          cp "$SRC" "$DEST"
+          echo "file=$DEST" >> "$GITHUB_OUTPUT"
 
       - name: Compose release notes
         shell: bash
@@ -32,6 +64,7 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
+          INSTALLER="${{ steps.installer.outputs.file }}"
 
           node scripts/extract-changelog.mjs "$VERSION" > changelog-section.md
 
@@ -46,17 +79,14 @@ jobs:
             echo
             echo '## Installation'
             echo
-            echo "1. Téléchargez \`Cleaner PC-$VERSION Setup.exe\` ci-dessous."
+            echo "1. Téléchargez \`$INSTALLER\` ci-dessous."
             echo '2. Lancez l’installeur. Windows peut afficher un avertissement SmartScreen (l’application n’est pas encore signée) : cliquez sur "Informations complémentaires" puis "Exécuter quand même".'
-            echo '3. Cleaner PC s’installe et se lance automatiquement.'
+            echo '3. Une fois l’installation terminée, lancez Cleaner PC depuis le menu Démarrer.'
             echo
             echo '## Vérification'
             echo
             echo '```'
-            shopt -s nullglob
-            for f in "out/make/squirrel.windows/x64/"*.exe "out/make/zip/win32/x64/"*.zip; do
-              sha256sum "$f"
-            done
+            sha256sum "$INSTALLER"
             echo '```'
           } > full-release-body.md
 
@@ -79,11 +109,9 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
-          shopt -s nullglob
-          assets=("out/make/squirrel.windows/x64/"*.exe "out/make/zip/win32/x64/"*.zip)
 
           gh release create "$TAG" \
             --title "Cleaner PC $VERSION" \
             --notes-file full-release-body.md \
             ${{ steps.prerelease.outputs.flag }} \
-            "${assets[@]}"
+            "${{ steps.installer.outputs.file }}"

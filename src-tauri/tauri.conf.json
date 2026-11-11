@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Cleaner PC",
-  "version": "0.1.0-alpha.2",
-  "identifier": "fr.cleanerpc.app",
+  "version": "../package.json",
+  "identifier": "fr.cleanerpc.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",

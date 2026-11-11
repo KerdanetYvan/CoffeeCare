@@ -2,7 +2,9 @@
 
 ## Vue d'ensemble
 
-CoffeeCare est une application desktop Windows de maintenance PC (nettoyage, réparation, mises à jour), construite avec Electron + React + TypeScript. L'interface est entièrement en **français**.
+CoffeeCare (produit : **Cleaner PC**) est une application desktop Windows de maintenance PC (nettoyage, réparation, mises à jour), construite avec Tauri 2 (Rust) + React + TypeScript. L'interface est entièrement en **français**.
+
+Tauri a remplacé Electron pour garder la consommation de RAM et de CPU sous contrôle : webview système (WebView2) au lieu d'un Chromium embarqué, backend en Rust.
 
 Un webdesigner travaille sur les maquettes — le style actuel est intentionnellement minimaliste et sera remplacé. Ne pas sur-investir dans le CSS avant réception des maquettes finales.
 
@@ -10,62 +12,86 @@ Un webdesigner travaille sur les maquettes — le style actuel est intentionnell
 
 | Couche | Technologie |
 |--------|-------------|
-| Desktop | Electron 38 |
+| Desktop | Tauri 2 (Rust, edition 2024) |
 | Frontend | React 19 + TypeScript 5.9 |
 | Bundler | Vite 7 |
 | Routing | React Router v7 (HashRouter) |
 | Style | Tailwind CSS 3.4 |
 | Icônes | Lucide React |
-| Logs | electron-log |
+| Logs | tauri-plugin-log (dev uniquement) |
+
+## Prérequis
+
+- Node.js 20+
+- Rust stable (rustup)
+- Outils de build Visual Studio, charge de travail « Développement Desktop en C++ » (sans eux, `link.exe` est introuvable)
+- WebView2 (présent sur Windows 11)
 
 ## Lancer le projet
 
 ```bash
-npm run dev    # Vite + Electron en parallèle (HMR actif)
-npm run build  # Build Vite de production
-npm start      # Lancer Electron sur le build
+npm run dev          # Tauri + Vite (HMR actif)
+npm run build        # Installeur Windows (NSIS) dans src-tauri/target/release/bundle/nsis
+npm run build:web    # Interface seule
+npm run lint         # ESLint
+npm run typecheck    # TypeScript
+cd src-tauri && cargo test    # Tests Rust
 ```
+
+Avant de pousser : `npm run lint`, `npm run typecheck`, puis dans `src-tauri` : `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` et `cargo test` (la CI fait la même chose).
+
+La version de l'application a **une seule source** : `package.json` (Tauri la lit via `tauri.conf.json`). `Cargo.toml` garde sa propre version, sans importance.
 
 ## Architecture
 
-### Communication Electron ↔ React (IPC)
+### Communication front ↔ Rust
 
-Le pattern IPC suit toujours trois fichiers :
+Chaque fonctionnalité système est une commande Tauri :
 
 ```
-electron/main.js          ipcMain.handle('channel:action', handler)
-electron/preload.js       contextBridge.exposeInMainWorld('api', { method })
-src/pages/*.tsx           window.api.method()
+src-tauri/src/<module>.rs   #[tauri::command] pub async fn domaine_action(...)
+src-tauri/src/lib.rs        enregistrée dans tauri::generate_handler![...]
+src/pages/*.tsx             invoke<Type>('domaine_action', { arg })
 ```
 
-Les noms de canaux suivent la convention `domaine:action` (ex. `system:getInfo`, `scan:getTempDirs`).
+Les noms de commandes suivent `domaine_action` en snake_case (`system_get_info`, `scan_get_temp_dirs`, `repair_fix_services`, `updates_install_elevated`). Côté JS, les arguments sont en camelCase (`{ openAtLogin }` ↔ `open_at_login`).
 
-La sécurité Electron est non-négociable : `contextIsolation: true` et `sandbox: true` restent activés. Ne jamais exposer `ipcRenderer` directement dans le preload.
+Pour une progression en continu (installation de logiciels), la commande reçoit un `tauri::ipc::Channel<T>` et le front passe un `new Channel<T>()` avec `onmessage`.
+
+Règles de sécurité (non négociables) :
+
+- Les commandes sont **async** et exécutent le travail bloquant dans `spawn_blocking` : l'interface ne doit jamais geler.
+- **Ne jamais faire confiance au front** : tout ce qui atteint un script administrateur est validé côté Rust (liste fermée de services, clés de registre limitées à la liste des programmes installés, dossiers connus pour le nettoyage, lettres de disque A-Z, identifiants de paquets sans tiret initial).
+- Les scripts PowerShell passent par `ps.rs` : transmis en `-EncodedCommand` (jamais de fichier `.ps1` temporaire) et toute valeur insérée est échappée avec `ps::quote`. Les programmes externes (winget…) sont lancés avec une liste d'arguments, sans interpréteur.
+- Pas de commande « shell générique » exposée au front. Les permissions de la fenêtre sont dans `src-tauri/capabilities/default.json`.
 
 ### Structure des fichiers
 
 ```
-electron/
-  main.js          # Process principal : fenêtre, IPC handlers
-  preload.js       # Context bridge uniquement — aucune logique métier
+src-tauri/
+  tauri.conf.json      # Fenêtre sans cadre, NSIS, version = ../package.json
+  capabilities/        # Permissions de la fenêtre
+  src/
+    lib.rs             # Builder, plugins (instance unique, opener, autostart), commandes
+    system.rs          # Infos système + échantillonneur CPU/RAM en arrière-plan
+    scan.rs            # Analyse et nettoyage des dossiers temporaires
+    repair.rs          # Services, fichiers système, périphériques, registre, démarrage, disques
+    updates.rs         # Logiciels (winget), pilotes (Windows Update), rapports d'échec
+    settings.rs        # Version, lancement avec Windows, ouverture d'un rapport
+    ps.rs              # PowerShell : normal, administrateur, résultat, échappement
+    proc.rs            # Processus sans console, délais, capture des sorties
 
 src/
-  App.tsx          # Router + lazy loading des pages
-  components/
-    layout/
-      MainLayout.tsx   # Layout partagé (header + sidebar + <Outlet>)
-  pages/
-    Dashboard.tsx      # Implémenté
-    Cleaning.tsx       # Stub
-    Repair.tsx         # Stub
-    Updates.tsx        # Stub
-    Settings.tsx       # Stub
-    NotFound.tsx       # 404
+  App.tsx              # Router + lazy loading des pages
+  types/commands.ts    # Types des réponses des commandes
+  components/layout/
+    MainLayout.tsx     # Layout partagé (barre de titre + sidebar + <Outlet>)
+  pages/               # Dashboard, Cleaning, Repair, Updates, Settings, NotFound
 ```
 
 ### Routing
 
-HashRouter est utilisé (obligatoire avec Electron en `file://`). Ne pas migrer vers BrowserRouter.
+HashRouter est utilisé. Ne pas migrer vers BrowserRouter.
 
 Routes actuelles :
 - `/` → Dashboard
@@ -78,10 +104,7 @@ Toutes les pages sont chargées en **lazy** via `React.lazy()` + `<Suspense>`.
 
 ### Layout
 
-`MainLayout` crée une grille CSS fixe :
-- Header 56px (col-span-2)
-- Sidebar 240px fixe à gauche
-- Zone contenu (`<Outlet>`) à droite, scrollable
+`MainLayout` crée la fenêtre sans cadre natif : barre de titre de 40px (glisser avec `data-tauri-drag-region`, boutons réduire/agrandir/fermer via `getCurrentWindow()`), sidebar à gauche, zone de contenu scrollable.
 
 ## Langage et ton de l'interface
 
@@ -96,14 +119,16 @@ Toutes les pages sont chargées en **lazy** via `React.lazy()` + `<Suspense>`.
 - **Ton calme et positif** : éviter les formulations alarmistes. Préférer "Votre système semble en bonne santé" à "Aucune violation d'intégrité détectée".
 - **Les abréviations et noms internes** (SFC, DISM, winget, CBS.log, IPC…) ne doivent jamais apparaître dans l'UI visible par l'utilisateur.
 
-Cette règle s'applique à tous les textes UI : titres, descriptions, boutons, messages d'état, bandeaux d'erreur, warnings.
+Cette règle s'applique à tous les textes UI : titres, descriptions, boutons, messages d'état, bandeaux d'erreur, warnings, y compris les messages d'erreur renvoyés par le Rust et les rapports d'échec ouverts par l'utilisateur.
+
+Exception : l'interface teste certains textes renvoyés par le Rust (ex. « Droits administrateur probablement requis » affiche le bouton de nouvel essai avec autorisation dans `Updates.tsx`). Ne pas les reformuler d'un côté seulement.
 
 ## Conventions de code
 
 ### TypeScript
 
 - Mode strict activé (`noUnusedLocals`, `noUnusedParameters`).
-- Déclarer les types des réponses IPC dans le fichier de page qui les consomme (voir `declare global { interface Window { api: ... } }` dans Dashboard.tsx).
+- Déclarer les types des réponses des commandes dans `src/types/commands.ts` et les passer à `invoke<Type>(...)`.
 - Préférer `interface` pour les shapes de données, `type` pour les unions et alias.
 
 ### Composants React
@@ -119,31 +144,34 @@ Cette règle s'applique à tous les textes UI : titres, descriptions, boutons, m
 - Ne pas créer de classes CSS custom pour ce que Tailwind gère déjà.
 - Attendre les maquettes avant de figer un design system.
 
-### Electron / main.js
+### Rust
 
-- Le fichier est en CommonJS (`require`/`module.exports`) — ne pas mélanger avec l'ESM du frontend.
-- Chaque nouvelle fonctionnalité système = un nouveau `ipcMain.handle` dans `main.js` + son exposition dans `preload.js`.
-- Les handlers IPC renvoient toujours `{ ok: boolean, data: ... }` pour les opérations qui peuvent échouer, ou directement l'objet pour les lectures simples (voir `system:getInfo`).
+- `cargo fmt` et `cargo clippy -- -D warnings` doivent passer (imposé par la CI).
+- Les commandes qui peuvent échouer renvoient un objet `{ ok, ... }` (avec `error` optionnel) plutôt qu'une `Err` quand l'interface affiche le résultat ; l'`Err` est réservée aux erreurs inattendues.
+- Pas de détail technique dans les messages destinés à l'utilisateur : logger le détail avec `log::warn!` et renvoyer un message simple.
+- Chaque module contient ses tests. Les analyses en lecture seule sont testées sur la vraie machine ; les corrections (qui demandent les droits administrateur) sont couvertes par des tests de validation des entrées.
+- Un test dont le résultat dépend de la machine (winget absent, etc.) doit s'ignorer proprement plutôt qu'échouer.
 
 ### Nommage
 
 - Fichiers composants : PascalCase (`MainLayout.tsx`, `Dashboard.tsx`)
-- Fichiers Electron : camelCase (`main.js`, `preload.js`)
-- Canaux IPC : `domaine:action` en camelCase (`scan:getTempDirs`)
+- Modules Rust : snake_case (`repair.rs`)
+- Commandes Tauri : `domaine_action` en snake_case (`scan_get_temp_dirs`)
 
 ## État d'avancement des fonctionnalités
 
 | Page | État | Notes |
 |------|------|-------|
-| Dashboard | Fonctionnel | Infos OS, CPU, RAM, uptime. RAM usage hardcodé à 65% (à brancher) |
-| Cleaning | Stub | Détection des dossiers temp déjà en IPC (`scan:getTempDirs`) |
-| Repair | Stub | — |
-| Updates | Stub | Doit utiliser winget |
-| Settings | Stub | Thème, langue, télémétrie (prévu) |
+| Dashboard | Fonctionnel | Infos système, CPU et RAM en temps réel (échantillon toutes les 3 s) |
+| Cleaning | Fonctionnel | 15 dossiers connus, détection des applications ouvertes, passage administrateur si besoin |
+| Repair | Fonctionnel | Services, fichiers système, périphériques, registre, démarrage, disques |
+| Updates | Fonctionnel | Logiciels via winget (progression en continu), pilotes via Windows Update |
+| Settings | Partiel | Version et lancement avec Windows ; thème, langue, télémétrie à venir |
 
 ## Points d'attention
 
-- **RAM usage** dans Dashboard : la barre est hardcodée à 65%. Brancher `os.freemem()` via IPC.
-- **Logs de debug** dans `main.js` : trois logs de test (info/warn/error) sont à supprimer avant release.
-- **Packaging** : aucun outil de packaging (electron-builder / electron-forge) n'est encore configuré.
-- **`dist/index.html`** en prod : le chemin est relatif à `process.cwd()` dans `main.js` — à valider lors de la mise en place du packaging.
+- **Icônes** : `src-tauri/icons/` contient les icônes par défaut de Tauri. À remplacer par le logo (`npx tauri icon logo.png`).
+- **Signature** : l'installeur n'est pas signé (avertissement SmartScreen).
+- **Dossier de données** : `%APPDATA%\fr.cleanerpc.desktop` (rapports d'échec dans `logs\`). Changer l'identifiant dans `tauri.conf.json` déplace ce dossier.
+- **Adaptateur supprimé** : les pages appellent `invoke()` directement (plus de `window.api`).
+- **Tests Rust sur la CI** : ils lancent de vraies analyses PowerShell. Si l'un d'eux dépend de la machine, le rendre tolérant.

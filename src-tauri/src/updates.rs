@@ -1066,6 +1066,10 @@ mod tests {
 
     #[test]
     fn software_scan_runs_for_real() {
+        if find_winget().is_none() {
+            eprintln!("gestionnaire de paquets absent de cette machine : test ignoré");
+            return;
+        }
         let res = get_software();
         println!(
             "ok={} {} programmes, erreur={:?}",
