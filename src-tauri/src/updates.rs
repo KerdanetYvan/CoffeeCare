@@ -101,6 +101,9 @@ pub struct SoftwareUpdate {
     current_version: String,
     available_version: String,
     source: String,
+    /// La version installée n'est pas lisible (« Unknown », « < x ») : le programme sera
+    /// listé à chaque analyse, même après une vraie mise à jour.
+    version_unknown: bool,
 }
 
 /// Lit le tableau affiché par `winget upgrade` (colonnes à positions fixes). Ça marche
@@ -165,14 +168,16 @@ fn parse_winget_table(output: &str) -> Vec<SoftwareUpdate> {
         if !is_valid_package_id(&id) || available.is_empty() {
             continue;
         }
+        let current_version = if version.is_empty() {
+            "Inconnu".to_string()
+        } else {
+            version
+        };
         packages.push(SoftwareUpdate {
             name: if name.is_empty() { id.clone() } else { name },
             id,
-            current_version: if version.is_empty() {
-                "Inconnu".into()
-            } else {
-                version
-            },
+            version_unknown: is_version_unknown(&current_version),
+            current_version,
             available_version: available,
             source: if source.is_empty() {
                 "winget".into()
@@ -1051,8 +1056,29 @@ mod tests {
                 current_version: "2.45.0".into(),
                 available_version: "2.46.1".into(),
                 source: "winget".into(),
+                version_unknown: false,
             }
         );
+    }
+
+    #[test]
+    fn unreadable_versions_are_flagged() {
+        let row = |name: &str, id: &str, version: &str| {
+            format!("{name:<25}{id:<22}{version:<12}{:<12}winget\r\n", "2.0")
+        };
+        let output = format!(
+            "{}{}{}{}",
+            table(),
+            row("Battle.net", "Blizzard.BattleNet", "Unknown"),
+            row("Ubisoft Connect", "Ubisoft.Connect", "< 1.2.3"),
+            row("Sans version", "Foo.Bar", ""),
+        );
+        let list = parse_winget_table(&output);
+        let flag = |id: &str| list.iter().find(|p| p.id == id).map(|p| p.version_unknown);
+        assert_eq!(flag("Git.Git"), Some(false));
+        assert_eq!(flag("Blizzard.BattleNet"), Some(true));
+        assert_eq!(flag("Ubisoft.Connect"), Some(true));
+        assert_eq!(flag("Foo.Bar"), Some(true));
     }
 
     #[test]

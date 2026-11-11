@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { ScanSearch, Download, CheckSquare, Square, Package, Cpu, AlertCircle, CheckCircle2, XCircle, RefreshCw, Power, TriangleAlert } from 'lucide-react';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type { SoftwareUpdate, DriverUpdate, InstallResult, UpdatesListResult, SwProgress, Verification, StreamResult, ElevatedInstallResult, CloseAppResult } from '../types/commands';
@@ -49,7 +49,8 @@ export default function Updates() {
     setDrList(dr.data);
     setSwError(sw.ok ? null : (sw.error ?? 'Erreur inconnue'));
     setDrError(dr.ok ? null : (dr.error ?? 'Erreur inconnue'));
-    setSelectedSw(new Set(sw.data.map(s => s.id)));
+    // Les versions illisibles ne sont pas présélectionnées : elles réapparaîtraient à chaque analyse.
+    setSelectedSw(new Set(sw.data.filter(s => !s.versionUnknown).map(s => s.id)));
     setPage('results');
   };
 
@@ -63,9 +64,9 @@ export default function Updates() {
 
   const toggleAllSw = () => {
     setSelectedSw(
-      selectedSw.size === swList.length
+      allKnownSelected
         ? new Set()
-        : new Set(swList.map(s => s.id))
+        : new Set(knownSw.map(s => s.id))
     );
   };
 
@@ -126,9 +127,15 @@ export default function Updates() {
   const totalDrMB = drList.reduce((acc, d) => acc + d.sizeMB, 0);
 
   // Packages affichés : tous en idle, seulement les sélectionnés pendant/après install
+  // Versions lisibles d'abord ; les versions illisibles sont présentées à part.
+  const knownSw   = swList.filter(p => !p.versionUnknown);
+  const unknownSw = swList.filter(p => p.versionUnknown);
+  const orderedSw = [...knownSw, ...unknownSw];
+  const allKnownSelected = knownSw.length > 0 && knownSw.every(p => selectedSw.has(p.id));
+
   const visibleSw = swInstall === 'idle'
-    ? swList
-    : swList.filter(p => selectedSw.has(p.id));
+    ? orderedSw
+    : orderedSw.filter(p => selectedSw.has(p.id));
 
   // Compteurs pour le résumé en phase done
   const staleCount = [...swItemStatus.values()].filter(s => s.status === 'ok' && s.verification === 'still_outdated').length;
@@ -197,13 +204,13 @@ export default function Updates() {
             {swList.length > 0 && (
               <>
                 {/* Sélection tout — seulement en idle */}
-                {swInstall === 'idle' && (
+                {swInstall === 'idle' && knownSw.length > 0 && (
                   <div className="flex items-center gap-3 pb-2 border-b border-neutral-200">
                     <button
                       onClick={toggleAllSw}
                       className="flex items-center gap-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors"
                     >
-                      {selectedSw.size === swList.length
+                      {allKnownSelected
                         ? <CheckSquare className="h-4 w-4 text-neutral-900" />
                         : <Square className="h-4 w-4" />}
                       Tout sélectionner
@@ -212,15 +219,25 @@ export default function Updates() {
                 )}
 
                 <ul className="space-y-2">
-                  {visibleSw.map(pkg => {
+                  {visibleSw.map((pkg, index) => {
+                    const startsUnknownGroup = swInstall === 'idle' && pkg.versionUnknown && index === knownSw.length;
                     const isSel     = selectedSw.has(pkg.id);
                     const item      = swItemStatus.get(pkg.id);
                     const status    = item?.status;
                     const isPending = swInstall !== 'idle' && !item;
 
                     return (
+                      <Fragment key={pkg.id}>
+                      {startsUnknownGroup && (
+                        <li className="pt-4 pb-1 list-none">
+                          <p className="text-sm font-medium text-neutral-700">Version actuelle non détectable</p>
+                          <p className="text-xs text-neutral-500 mt-0.5">
+                            Windows ne sait pas quelle version de ces programmes est installée. Ils peuvent réapparaître
+                            dans la liste même après une mise à jour. Ils ne sont pas sélectionnés par défaut.
+                          </p>
+                        </li>
+                      )}
                       <li
-                        key={pkg.id}
                         onClick={() => { if (swInstall === 'idle') toggleSw(pkg.id); }}
                         className={[
                           'flex items-center gap-4 p-4 border transition-colors',
@@ -317,10 +334,13 @@ export default function Updates() {
 
                         {/* Versions */}
                         <div className="text-right flex-shrink-0 text-sm">
-                          <span className="text-neutral-400 line-through mr-2">{pkg.currentVersion}</span>
+                          {pkg.versionUnknown
+                            ? <span className="text-neutral-400 mr-2">Version inconnue</span>
+                            : <span className="text-neutral-400 line-through mr-2">{pkg.currentVersion}</span>}
                           <span className="font-semibold">{pkg.availableVersion}</span>
                         </div>
                       </li>
+                      </Fragment>
                     );
                   })}
                 </ul>
