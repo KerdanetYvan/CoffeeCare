@@ -78,6 +78,14 @@ export interface DriverUpdate {
   sizeMB: number;
 }
 
+/** Analyse des logiciels : la liste proposée, et à part les programmes que l'utilisateur a masqués. */
+export interface SoftwareScanResult {
+  ok: boolean;
+  data: SoftwareUpdate[];
+  hidden: SoftwareUpdate[];
+  error?: string;
+}
+
 export interface UpdatesListResult<T> {
   ok: boolean;
   data: T[];

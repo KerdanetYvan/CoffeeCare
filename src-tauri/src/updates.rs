@@ -4,7 +4,7 @@
 //! un interpréteur : un identifiant de programme ne peut pas devenir une commande.
 //! Les rapports d'échec sont écrits dans `<données de l'app>\logs`.
 
-use crate::{proc, ps};
+use crate::{hidden, proc, ps};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -214,9 +214,41 @@ impl<T> ListResult<T> {
     }
 }
 
-fn get_software() -> ListResult<SoftwareUpdate> {
+/// Résultat de l'analyse des logiciels : la liste proposée, et à part les programmes que
+/// l'utilisateur a masqués (pour qu'il puisse les proposer de nouveau).
+#[derive(Serialize)]
+pub struct SoftwareScan {
+    ok: bool,
+    data: Vec<SoftwareUpdate>,
+    hidden: Vec<SoftwareUpdate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl SoftwareScan {
+    fn failed(message: &str) -> Self {
+        SoftwareScan {
+            ok: false,
+            data: Vec::new(),
+            hidden: Vec::new(),
+            error: Some(message.into()),
+        }
+    }
+}
+
+/// Sépare les programmes proposés de ceux que l'utilisateur a masqués.
+fn split_hidden(
+    packages: Vec<SoftwareUpdate>,
+    hidden_ids: &[String],
+) -> (Vec<SoftwareUpdate>, Vec<SoftwareUpdate>) {
+    packages
+        .into_iter()
+        .partition(|p| !hidden::contains(hidden_ids, &p.id))
+}
+
+fn get_software(hidden_ids: &[String]) -> SoftwareScan {
     let Some(winget) = find_winget() else {
-        return ListResult::err(NO_UPDATER_ERROR);
+        return SoftwareScan::failed(NO_UPDATER_ERROR);
     };
     // Rafraîchit les sources avant l'analyse pour éviter les faux positifs.
     let _ = run_winget(&winget, &["source", "update"], SOURCE_UPDATE_TIMEOUT);
@@ -229,18 +261,76 @@ fn get_software() -> ListResult<SoftwareUpdate> {
         Ok(run) => {
             let packages = parse_winget_table(&run.stdout);
             log::info!("[mises à jour] {} programme(s) détecté(s)", packages.len());
-            ListResult::ok(packages)
+            let (data, hidden) = split_hidden(packages, hidden_ids);
+            SoftwareScan {
+                ok: true,
+                data,
+                hidden,
+                error: None,
+            }
         }
         Err(e) => {
             log::warn!("[mises à jour] analyse échouée : {e}");
-            ListResult::err(GENERIC_ERROR)
+            SoftwareScan::failed(GENERIC_ERROR)
         }
     }
 }
 
+/// Dossier de données de l'application, où vit la liste des programmes masqués.
+fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path().app_data_dir().map_err(|e| {
+        log::warn!("dossier de données introuvable : {e}");
+        GENERIC_ERROR.to_string()
+    })
+}
+
 #[tauri::command]
-pub async fn updates_get_software() -> Result<ListResult<SoftwareUpdate>, String> {
-    blocking(get_software).await
+pub async fn updates_get_software(app: AppHandle) -> Result<SoftwareScan, String> {
+    // Sans liste lisible, rien n'est masqué : l'analyse ne doit pas échouer pour ça.
+    let hidden_ids = data_dir(&app).map(|d| hidden::load(&d)).unwrap_or_default();
+    blocking(move || get_software(&hidden_ids)).await
+}
+
+/// Identifiants des programmes masqués (même ceux qui n'ont plus de mise à jour en attente).
+#[tauri::command]
+pub async fn updates_get_hidden(app: AppHandle) -> Result<Vec<String>, String> {
+    let dir = data_dir(&app)?;
+    blocking(move || hidden::load(&dir)).await
+}
+
+fn hidden_change(
+    app: &AppHandle,
+    change: impl FnOnce(&Path) -> std::io::Result<Vec<String>> + Send + 'static,
+) -> impl std::future::Future<Output = Result<Vec<String>, String>> {
+    let dir = data_dir(app);
+    async move {
+        let dir = dir?;
+        blocking(move || change(&dir)).await?.map_err(|e| {
+            log::warn!("liste des programmes masqués non enregistrée : {e}");
+            GENERIC_ERROR.to_string()
+        })
+    }
+}
+
+/// Ne plus proposer ce programme. Renvoie la liste des programmes masqués.
+#[tauri::command]
+pub async fn updates_hide(app: AppHandle, id: String) -> Result<Vec<String>, String> {
+    if !is_valid_package_id(&id) {
+        return Err(GENERIC_ERROR.into());
+    }
+    hidden_change(&app, move |dir| hidden::hide(dir, &id)).await
+}
+
+/// Proposer de nouveau ce programme. Renvoie la liste des programmes masqués.
+#[tauri::command]
+pub async fn updates_unhide(app: AppHandle, id: String) -> Result<Vec<String>, String> {
+    hidden_change(&app, move |dir| hidden::unhide(dir, &id)).await
+}
+
+/// Proposer de nouveau tous les programmes masqués.
+#[tauri::command]
+pub async fn updates_unhide_all(app: AppHandle) -> Result<Vec<String>, String> {
+    hidden_change(&app, hidden::unhide_all).await
 }
 
 // ─── Pilotes ────────────────────────────────────────────────────────────────
@@ -1062,6 +1152,34 @@ mod tests {
     }
 
     #[test]
+    fn hidden_programs_are_set_aside_not_lost() {
+        let packages = parse_winget_table(&table());
+        assert_eq!(packages.len(), 2);
+
+        // Rien de masqué : tout est proposé.
+        let (shown, hidden) = split_hidden(parse_winget_table(&table()), &[]);
+        assert_eq!((shown.len(), hidden.len()), (2, 0));
+
+        // Un programme masqué quitte la liste mais reste disponible à part, sans tenir compte de la casse.
+        let (shown, hidden) = split_hidden(packages, &["git.git".to_string()]);
+        assert_eq!(
+            shown.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            ["Foo.Editeur"]
+        );
+        assert_eq!(
+            hidden.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            ["Git.Git"]
+        );
+
+        // Un identifiant masqué qui n'a plus de mise à jour n'apparaît nulle part.
+        let (shown, hidden) = split_hidden(
+            parse_winget_table(&table()),
+            &["Ancien.Programme".to_string()],
+        );
+        assert_eq!((shown.len(), hidden.len()), (2, 0));
+    }
+
+    #[test]
     fn unreadable_versions_are_flagged() {
         let row = |name: &str, id: &str, version: &str| {
             format!("{name:<25}{id:<22}{version:<12}{:<12}winget\r\n", "2.0")
@@ -1334,7 +1452,7 @@ mod tests {
             eprintln!("gestionnaire de paquets absent de cette machine : test ignoré");
             return;
         }
-        let res = get_software();
+        let res = get_software(&[]);
         println!(
             "ok={} {} programmes, erreur={:?}",
             res.ok,
