@@ -1,12 +1,12 @@
 import { Fragment, useState } from 'react';
 import { ScanSearch, Download, CheckSquare, Square, Package, Cpu, AlertCircle, CheckCircle2, XCircle, RefreshCw, Power, TriangleAlert, ChevronDown, ChevronRight, EyeOff } from 'lucide-react';
 import { Channel, invoke } from '@tauri-apps/api/core';
-import type { SoftwareUpdate, DriverUpdate, InstallResult, SoftwareScanResult, UpdatesListResult, SwProgress, Verification, StreamResult, ElevatedInstallResult, CloseAppResult } from '../types/commands';
+import type { SoftwareUpdate, DriverUpdate, InstallResult, SoftwareScanResult, UpdatesListResult, SwProgress, Verification, FailureKind, StreamResult, ElevatedInstallResult, CloseAppResult } from '../types/commands';
 
 type PagePhase    = 'idle' | 'scanning' | 'results';
 type InstallPhase = 'idle' | 'installing' | 'done';
 type SwStatus = 'installing' | 'ok' | 'error';
-interface SwItem { status: SwStatus; reason?: string; reboot?: 'app' | 'system'; verification?: Verification; closeMsg?: string }
+interface SwItem { status: SwStatus; reason?: string; kind?: FailureKind; reboot?: 'app' | 'system'; verification?: Verification; closeMsg?: string }
 
 function formatMB(mb: number): string {
   if (mb < 1)    return '< 1 Mo';
@@ -137,8 +137,8 @@ export default function Updates() {
     setLogFile(null);
 
     const onProgress = new Channel<SwProgress>();
-    onProgress.onmessage = ({ id, status, reason, reboot, verification }) => {
-      setSwItemStatus(prev => new Map(prev).set(id, { status, reason, reboot, verification }));
+    onProgress.onmessage = ({ id, status, reason, kind, reboot, verification }) => {
+      setSwItemStatus(prev => new Map(prev).set(id, { status, reason, kind, reboot, verification }));
     };
 
     const result = await invoke<StreamResult>('updates_install_software_stream', { packages, onProgress });
@@ -365,7 +365,7 @@ export default function Updates() {
                                 Ne plus proposer
                               </button>
                             )}
-                            {status === 'error' && item?.reason === 'Droits administrateur probablement requis' && (
+                            {status === 'error' && item?.kind === 'needs_permission' && (
                               <button
                                 onClick={async (e) => {
                                   e.stopPropagation();
@@ -375,16 +375,17 @@ export default function Updates() {
                                   setSwItemStatus(prev => new Map(prev).set(pkg.id, {
                                     status: result.ok ? 'ok' : 'error',
                                     reason: result.reason,
+                                    kind: result.kind,
                                     reboot: result.reboot,
                                     verification: result.verification,
                                   }));
                                 }}
                                 className="text-xs text-neutral-500 underline underline-offset-2 hover:text-neutral-900 transition-colors mt-0.5"
                               >
-                                Réessayer en administrateur
+                                Réessayer avec autorisation
                               </button>
                             )}
-                            {status === 'error' && !item?.closeMsg && item?.reason && /fermez/i.test(item.reason) && (
+                            {status === 'error' && !item?.closeMsg && item?.kind === 'close_app' && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); closeApp(pkg); }}
                                 className="text-xs text-neutral-500 underline underline-offset-2 hover:text-neutral-900 transition-colors mt-0.5"

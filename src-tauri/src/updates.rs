@@ -4,6 +4,7 @@
 //! un interpréteur : un identifiant de programme ne peut pas devenir une commande.
 //! Les rapports d'échec sont écrits dans `<données de l'app>\logs`.
 
+use crate::diagnose::{self, FailureKind, GENERIC_ERROR};
 use crate::{hidden, proc, ps};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -21,12 +22,12 @@ const ELEVATED_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 const DRIVER_SCAN_TIMEOUT: Duration = Duration::from_secs(60);
 const DRIVER_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
-const GENERIC_ERROR: &str = "Une erreur est survenue, réessayez";
 const NO_UPDATER_ERROR: &str =
     "Le gestionnaire de mises à jour de Windows est introuvable sur ce PC";
 
-/// Codes Windows « installé avec succès, redémarrage nécessaire ».
-const REBOOT_CODES: [i64; 2] = [3010, 1641];
+/// Codes « installé avec succès, redémarrage nécessaire » : ceux des installateurs Windows
+/// (3010, 1641) et ceux de winget (« redémarrez pour terminer », « le PC va redémarrer »).
+const REBOOT_CODES: [i64; 4] = [3010, 1641, 0x8A15_0109, 0x8A15_010B];
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(f)
@@ -545,55 +546,6 @@ fn install_args(id: &str) -> [&str; 9] {
     ]
 }
 
-static REASON_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
-    [
-        (
-            r"(?i)fichiers.{0,80}actuellement utilis",
-            "Fermez l'application, puis réessayez",
-        ),
-        (
-            r"(?i)technologie d.installation différente",
-            "Réinstallation manuelle requise",
-        ),
-        (
-            r"(?i)code de hachage.{0,40}ne correspond pas",
-            "Problème de téléchargement — réessayez",
-        ),
-        (
-            r"(?i)aucune mise à (?:niveau|upgrade) applicable",
-            "Pas de version compatible pour votre système",
-        ),
-        (
-            r"(?i)ne s.applique pas à votre système",
-            "Pas de version compatible pour votre système",
-        ),
-        (
-            r"(?i)aucun package installé ne correspond",
-            "Programme non reconnu",
-        ),
-        (
-            r"(?i)impossible de déterminer le numéro de version",
-            "Version non identifiable — mise à jour impossible",
-        ),
-        (r"(?i)application not found", "Application introuvable"),
-        (
-            r"(?i)une erreur inattendue s.est produite",
-            "Erreur interne — réessayez",
-        ),
-        (r"(?i)code de sortie.*3221226525", NEEDS_ADMIN),
-        (
-            r"(?i)code de sortie.*6\b",
-            "Fermez l'application avant de mettre à jour",
-        ),
-    ]
-    .into_iter()
-    .map(|(pattern, message)| (Regex::new(pattern).unwrap(), message))
-    .collect()
-});
-
-/// Cette phrase exacte déclenche le bouton « réessayer avec autorisation » côté interface.
-const NEEDS_ADMIN: &str = "Droits administrateur probablement requis";
-
 fn is_spinner(line: &str) -> bool {
     matches!(line, "-" | "\\" | "|" | "/")
 }
@@ -605,29 +557,6 @@ fn clean_winget_output(output: &str) -> Vec<String> {
         .filter(|l| !l.is_empty() && !is_spinner(l))
         .map(String::from)
         .collect()
-}
-
-fn extract_reason(output: &str, code: i64) -> String {
-    for (pattern, message) in REASON_PATTERNS.iter() {
-        if pattern.is_match(output) {
-            return (*message).into();
-        }
-    }
-    if let Some(last) = output
-        .lines()
-        .map(str::trim)
-        .rfind(|l| l.chars().count() > 5 && !is_spinner(l))
-    {
-        return last.chars().take(120).collect();
-    }
-    match code {
-        2316632070 => "L'installeur a échoué",
-        2316632337 => "Fichiers en cours d'utilisation — fermez l'application",
-        2316632081 => "Vérification de sécurité échouée",
-        2147746293 => "Application introuvable",
-        _ => GENERIC_ERROR,
-    }
-    .into()
 }
 
 /// Redémarrage à prévoir après une installation réussie : de l'application ou du PC.
@@ -704,6 +633,9 @@ pub struct Progress {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// Type d'échec : l'interface en tire le bouton à proposer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<FailureKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reboot: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -750,6 +682,7 @@ fn install_software_stream(
             id: id.clone(),
             status: "installing",
             reason: None,
+            kind: None,
             reboot: None,
             verification: None,
         });
@@ -766,6 +699,7 @@ fn install_software_stream(
                 id,
                 status: "error",
                 reason: Some(GENERIC_ERROR.into()),
+                kind: Some(FailureKind::Other),
                 reboot: None,
                 verification: None,
             });
@@ -813,16 +747,19 @@ fn install_software_stream(
                 id,
                 status: "ok",
                 reason: None,
+                kind: None,
                 reboot,
                 verification,
             });
         } else {
             needs_report = true;
             lines.push(report_failure(&name, &id, "Échec", code, &captured));
+            let diagnosis = diagnose::diagnose(&captured, code);
             emit(Progress {
                 id,
                 status: "error",
-                reason: Some(extract_reason(&captured, code)),
+                reason: Some(diagnosis.message),
+                kind: Some(diagnosis.kind),
                 reboot: None,
                 verification: None,
             });
@@ -866,6 +803,8 @@ pub struct ElevatedResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<FailureKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     reboot: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     verification: Option<Verification>,
@@ -873,10 +812,11 @@ pub struct ElevatedResult {
     log_file: Option<String>,
 }
 
-fn refused(reason: &str) -> ElevatedResult {
+fn refused(reason: &str, kind: FailureKind) -> ElevatedResult {
     ElevatedResult {
         ok: false,
         reason: Some(reason.into()),
+        kind: Some(kind),
         reboot: None,
         verification: None,
         log_file: None,
@@ -885,10 +825,10 @@ fn refused(reason: &str) -> ElevatedResult {
 
 fn install_elevated(app: &AppHandle, pkg: Package) -> ElevatedResult {
     let Some(winget) = find_winget() else {
-        return refused(NO_UPDATER_ERROR);
+        return refused(NO_UPDATER_ERROR, FailureKind::Other);
     };
     if !is_valid_package_id(&pkg.id) {
-        return refused(GENERIC_ERROR);
+        return refused(GENERIC_ERROR, FailureKind::Other);
     }
     let Package {
         id,
@@ -910,7 +850,11 @@ $code = $LASTEXITCODE
 
     let parsed: Option<serde_json::Value> = serde_json::from_str(&result).ok();
     let Some(parsed) = parsed.filter(|_| launched) else {
-        return refused("Autorisation refusée ou mise à jour annulée");
+        // Windows a peut-être été refusé : on laisse la possibilité de réessayer.
+        return refused(
+            "L'autorisation a été refusée ou la mise à jour annulée",
+            FailureKind::NeedsPermission,
+        );
     };
     let code = parsed
         .get("code")
@@ -933,6 +877,7 @@ $code = $LASTEXITCODE
         return ElevatedResult {
             ok: true,
             reason: None,
+            kind: None,
             reboot,
             verification: match reboot {
                 None => Some(verify_install(&winget, &id, current_version.as_deref())),
@@ -950,17 +895,23 @@ $code = $LASTEXITCODE
             report_failure(&name, &id, "Échec admin", code, &output),
         ],
     );
-    // Les droits sont déjà élevés : si le diagnostic parle encore de droits, c'est que
-    // l'installeur a planté, le plus souvent parce que le programme est resté ouvert.
-    let mut reason = extract_reason(&output, code);
-    if reason == NEEDS_ADMIN {
-        reason = format!(
-            "Le programme d'installation a planté — fermez complètement {name} (icône dans la barre des tâches incluse), puis réessayez"
-        );
-    }
+    // L'autorisation est déjà donnée : si le diagnostic parle encore d'autorisation, c'est que
+    // l'installation a planté, le plus souvent parce que le programme est resté ouvert.
+    let diagnosis = diagnose::diagnose(&output, code);
+    let (kind, reason) = if diagnosis.kind == FailureKind::NeedsPermission {
+        (
+            FailureKind::CloseApp,
+            format!(
+                "L'installation n'a pas abouti malgré l'autorisation. Fermez complètement {name} (y compris son icône près de l'horloge), puis réessayez"
+            ),
+        )
+    } else {
+        (diagnosis.kind, diagnosis.message)
+    };
     ElevatedResult {
         ok: false,
         reason: Some(reason),
+        kind: Some(kind),
         reboot: None,
         verification: None,
         log_file,
@@ -1223,38 +1174,13 @@ mod tests {
     }
 
     #[test]
-    fn failure_reasons_are_friendly() {
-        let r = |o: &str, c| extract_reason(o, c);
-        assert_eq!(
-            r(
-                "Les fichiers sont actuellement utilisés par un autre processus",
-                1
-            ),
-            "Fermez l'application, puis réessayez"
-        );
-        assert_eq!(
-            r("Code de sortie de l'installeur : 3221226525", 1),
-            NEEDS_ADMIN
-        );
-        assert_eq!(
-            r("Aucun package installé ne correspond", 1),
-            "Programme non reconnu"
-        );
-        assert_eq!(
-            r("", 2316632337),
-            "Fichiers en cours d'utilisation — fermez l'application"
-        );
-        assert_eq!(r("", 42), GENERIC_ERROR);
-        assert_eq!(
-            r("-\n\\\nDernière ligne utile ici", 1),
-            "Dernière ligne utile ici"
-        );
-        for (_, message) in REASON_PATTERNS.iter() {
-            assert!(
-                !message.to_lowercase().contains("winget"),
-                "jargon visible : {message}"
-            );
-        }
+    fn winget_restart_codes_are_successes_not_failures() {
+        // « Redémarrez votre PC pour terminer l'installation » : l'installation a réussi.
+        assert!(REBOOT_CODES.contains(&0x8A15_0109));
+        assert!(REBOOT_CODES.contains(&0x8A15_010B));
+        assert_eq!(detect_reboot(0x8A15_0109, ""), Some("system"));
+        // Mais « installation échouée, redémarrez puis réessayez » (0x8A15010A) reste un échec.
+        assert!(!REBOOT_CODES.contains(&0x8A15_010A));
     }
 
     #[test]
