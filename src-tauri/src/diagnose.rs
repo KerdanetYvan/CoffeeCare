@@ -103,7 +103,7 @@ static TEXT_RULES: LazyLock<Vec<(Regex, FailureKind, &'static str)>> = LazyLock:
         (
             r"(?i)délai dépassé",
             RetryLater,
-            "L'installation n'a pas abouti dans le temps prévu. Réessayez",
+            "L'installation a pris trop de temps et a été arrêtée. Réessayez, ou installez depuis le site de l'éditeur",
         ),
         (
             r"(?i)une erreur inattendue s.est produite",

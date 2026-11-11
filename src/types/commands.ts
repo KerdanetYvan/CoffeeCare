@@ -212,6 +212,8 @@ export interface SwProgress {
   kind?: FailureKind;
   reboot?: 'app' | 'system';
   verification?: Verification;
+  /** Vrai quand l'installation dure (plus d'une minute) : à signaler à l'utilisateur. */
+  slow?: boolean;
 }
 
 export interface StreamResult {

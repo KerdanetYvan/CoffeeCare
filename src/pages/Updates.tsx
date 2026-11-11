@@ -6,7 +6,7 @@ import type { SoftwareUpdate, DriverUpdate, InstallResult, SoftwareScanResult, U
 type PagePhase    = 'idle' | 'scanning' | 'results';
 type InstallPhase = 'idle' | 'installing' | 'done';
 type SwStatus = 'installing' | 'ok' | 'error';
-interface SwItem { status: SwStatus; reason?: string; kind?: FailureKind; reboot?: 'app' | 'system'; verification?: Verification; closeMsg?: string }
+interface SwItem { status: SwStatus; reason?: string; kind?: FailureKind; reboot?: 'app' | 'system'; verification?: Verification; slow?: boolean; closeMsg?: string }
 
 function formatMB(mb: number): string {
   if (mb < 1)    return '< 1 Mo';
@@ -137,8 +137,8 @@ export default function Updates() {
     setLogFile(null);
 
     const onProgress = new Channel<SwProgress>();
-    onProgress.onmessage = ({ id, status, reason, kind, reboot, verification }) => {
-      setSwItemStatus(prev => new Map(prev).set(id, { status, reason, kind, reboot, verification }));
+    onProgress.onmessage = ({ id, status, reason, kind, reboot, verification, slow }) => {
+      setSwItemStatus(prev => new Map(prev).set(id, { status, reason, kind, reboot, verification, slow }));
     };
 
     const result = await invoke<StreamResult>('updates_install_software_stream', { packages, onProgress });
@@ -346,10 +346,11 @@ export default function Updates() {
                             )}
                           </div>
                           <div className="mt-0.5">
-                            <p className="text-xs text-neutral-400 truncate">
+                            <p className={['text-xs text-neutral-400', status === 'installing' && item?.slow ? '' : 'truncate'].join(' ')}>
                               {swInstall === 'idle'    && pkg.id}
                               {isPending               && 'En attente…'}
-                              {status === 'installing' && 'Installation…'}
+                              {status === 'installing' && !item?.slow && 'Installation…'}
+                              {status === 'installing' && item?.slow  && "Installation longue en cours — c'est normal pour un gros programme. Windows peut vous demander une autorisation : regardez votre barre des tâches"}
                               {status === 'ok' && item?.verification === 'confirmed'      && 'Mis à jour — version confirmée'}
                               {status === 'ok' && item?.verification === 'still_outdated' && "Installé, mais l'ancienne version est toujours détectée"}
                               {status === 'ok' && item?.verification === 'unverifiable'   && 'Mis à jour (la version ne peut pas être vérifiée)'}
