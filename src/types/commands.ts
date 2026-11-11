@@ -69,6 +69,8 @@ export interface SoftwareUpdate {
   currentVersion: string;
   availableVersion: string;
   source: string;
+  /** Version installée illisible : le programme réapparaît à chaque analyse. */
+  versionUnknown: boolean;
 }
 
 export interface DriverUpdate {
