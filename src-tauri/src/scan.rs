@@ -1,7 +1,6 @@
 //! Analyse et nettoyage des dossiers temporaires.
 
-use crate::proc;
-use base64::Engine;
+use crate::{proc, ps};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -276,35 +275,19 @@ pub struct CleanResult {
     dirs: Vec<DirCleanResult>,
 }
 
-fn ps_quote(s: &str) -> String {
-    s.replace('\'', "''")
-}
-
-/// Vide les dossiers via un PowerShell lancé en administrateur. Windows demande
-/// l'autorisation à l'utilisateur. Le script est transmis encodé : aucun fichier
-/// intermédiaire que quelqu'un d'autre pourrait modifier avant son exécution.
+/// Vide les dossiers via un PowerShell lancé en administrateur (Windows demande
+/// l'autorisation à l'utilisateur).
 fn delete_elevated(paths: &[String]) -> bool {
     let script: String = paths
         .iter()
         .map(|p| {
             format!(
-                "Get-ChildItem -LiteralPath '{}' -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue\n",
-                ps_quote(p)
+                "Get-ChildItem -LiteralPath {} -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue\n",
+                ps::quote(p)
             )
         })
         .collect();
-    let utf16: Vec<u8> = script
-        .encode_utf16()
-        .flat_map(|u| u.to_le_bytes())
-        .collect();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
-
-    let launcher = format!(
-        "Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','{encoded}' -Verb RunAs -Wait -WindowStyle Hidden -ErrorAction Stop"
-    );
-    let mut cmd = proc::hidden("powershell");
-    cmd.args(["-NoProfile", "-Command", &launcher]);
-    matches!(proc::status_with_timeout(cmd, ELEVATION_TIMEOUT), Ok(Some(s)) if s.success())
+    ps::run_elevated(&script, ELEVATION_TIMEOUT)
 }
 
 fn clean(requested: Vec<String>) -> CleanResult {

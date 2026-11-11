@@ -1,4 +1,6 @@
 mod proc;
+mod ps;
+mod repair;
 mod scan;
 mod settings;
 mod system;
@@ -34,6 +36,17 @@ pub fn run() {
             settings::settings_get_info,
             settings::settings_set_login_item,
             settings::shell_open_log,
+            repair::repair_get_services,
+            repair::repair_fix_services,
+            repair::repair_run_sfc,
+            repair::repair_get_driver_errors,
+            repair::repair_fix_driver_errors,
+            repair::repair_get_registry_issues,
+            repair::repair_fix_registry_issues,
+            repair::repair_get_startup_items,
+            repair::repair_set_startup_items,
+            repair::repair_get_disk_health,
+            repair::repair_schedule_disk_check,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

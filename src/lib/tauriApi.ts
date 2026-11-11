@@ -41,17 +41,17 @@ export function installTauriApi(): void {
     installDrivers: notPorted('installDrivers'),
 
     // Réparation
-    getServices: notPorted('getServices'),
-    fixServices: notPorted('fixServices'),
-    runSFC: notPorted('runSFC'),
-    getDriverErrors: notPorted('getDriverErrors'),
-    fixDriverErrors: notPorted('fixDriverErrors'),
-    getRegistryIssues: notPorted('getRegistryIssues'),
-    fixRegistryIssues: notPorted('fixRegistryIssues'),
-    getStartupItems: notPorted('getStartupItems'),
-    setStartupItems: notPorted('setStartupItems'),
-    getDiskHealth: notPorted('getDiskHealth'),
-    scheduleDiskCheck: notPorted('scheduleDiskCheck'),
+    getServices: () => invoke('repair_get_services'),
+    fixServices: (names) => invoke('repair_fix_services', { names }),
+    runSFC: () => invoke('repair_run_sfc'),
+    getDriverErrors: () => invoke('repair_get_driver_errors'),
+    fixDriverErrors: (ids) => invoke('repair_fix_driver_errors', { ids }),
+    getRegistryIssues: () => invoke('repair_get_registry_issues'),
+    fixRegistryIssues: (paths) => invoke('repair_fix_registry_issues', { paths }),
+    getStartupItems: () => invoke('repair_get_startup_items'),
+    setStartupItems: (changes) => invoke('repair_set_startup_items', { changes }),
+    getDiskHealth: () => invoke('repair_get_disk_health'),
+    scheduleDiskCheck: (letters) => invoke('repair_schedule_disk_check', { letters }),
 
     // Paramètres
     getSettingsInfo: () => invoke('settings_get_info'),
