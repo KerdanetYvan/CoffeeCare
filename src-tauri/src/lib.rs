@@ -3,6 +3,7 @@ mod hidden;
 mod proc;
 mod ps;
 mod repair;
+mod report;
 mod scan;
 mod settings;
 mod system;

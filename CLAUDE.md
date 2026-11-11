@@ -78,6 +78,7 @@ src-tauri/
     repair.rs          # Services, fichiers système, périphériques, registre, démarrage, disques
     updates.rs         # Logiciels (winget), pilotes (Windows Update), rapports d'échec
     diagnose.rs        # Échecs d'installation : message simple + type (bouton à proposer)
+    report.rs          # Rapport de chaque session de mise à jour (versions avant / attendue / après)
     settings.rs        # Version, lancement avec Windows, ouverture d'un rapport
     hidden.rs          # Programmes masqués dans les mises à jour (hidden-updates.json)
     ps.rs              # PowerShell : normal, administrateur, résultat, échappement
@@ -152,7 +153,7 @@ Les messages d'échec des mises à jour viennent de `diagnose.rs` (un message en
 - Les commandes qui peuvent échouer renvoient un objet `{ ok, ... }` (avec `error` optionnel) plutôt qu'une `Err` quand l'interface affiche le résultat ; l'`Err` est réservée aux erreurs inattendues.
 - Pas de détail technique dans les messages destinés à l'utilisateur : logger le détail avec `log::warn!` et renvoyer un message simple.
 - Chaque module contient ses tests. Les analyses en lecture seule sont testées sur la vraie machine ; les corrections (qui demandent les droits administrateur) sont couvertes par des tests de validation des entrées.
-- Un test dont le résultat dépend de la machine (winget absent, etc.) doit s'ignorer proprement plutôt qu'échouer.
+- Un test dont le résultat dépend de la machine (winget absent, etc.) doit s'ignorer proprement plutôt qu'échouer. Ne pas non plus tester la **formulation** d'une réponse de winget obtenue en vrai : elle change selon la version, la langue et les sources (le serveur de la CI répond autrement que le PC de développement). Tester les messages sur des textes fixes (`diagnose.rs`).
 - **Délais** : un délai dépassé arrête le processus **et ses enfants** (`proc::kill_tree`), sinon l'installateur lancé par winget continue seul et bloque le nouvel essai. Les durées des installations sont réglables (`InstallTimings`) pour pouvoir tester les cas lents avec un faux gestionnaire de paquets (script `.cmd`) sans toucher aux programmes de la machine.
 - **winget : lire ne veut pas dire `upgrade`.** `winget upgrade --id X` **installe** la mise à jour, même sans `--silent`. Pour lire l'état d'un programme, utiliser `winget list --id X --exact` (et `winget upgrade` sans `--id` pour lister). Un test `verification_never_installs` protège la vérification après installation. Ne jamais lancer de commande winget de mise à jour pour « essayer » sur la machine de développement.
 - Le tableau de winget n'a pas toujours la colonne « Disponible » (absente quand rien n'est à mettre à jour) : ne pas supposer 5 colonnes.
@@ -177,6 +178,6 @@ Les messages d'échec des mises à jour viennent de `diagnose.rs` (un message en
 
 - **Icônes** : `src-tauri/icons/` contient les icônes par défaut de Tauri. À remplacer par le logo (`npx tauri icon logo.png`).
 - **Signature** : l'installeur n'est pas signé (avertissement SmartScreen).
-- **Dossier de données** : `%APPDATA%\fr.cleanerpc.desktop` (rapports d'échec dans `logs\`, programmes masqués dans `hidden-updates.json`). Changer l'identifiant dans `tauri.conf.json` déplace ce dossier.
+- **Dossier de données** : `%APPDATA%\fr.cleanerpc.desktop` (un rapport par session de mise à jour dans `logs\`, les 30 derniers sont conservés ; programmes masqués dans `hidden-updates.json`). Changer l'identifiant dans `tauri.conf.json` déplace ce dossier.
 - **Adaptateur supprimé** : les pages appellent `invoke()` directement (plus de `window.api`).
 - **Tests Rust sur la CI** : ils lancent de vraies analyses PowerShell. Si l'un d'eux dépend de la machine, le rendre tolérant.
