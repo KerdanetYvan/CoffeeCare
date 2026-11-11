@@ -24,7 +24,7 @@ export default function MainLayout() {
     <div className="h-screen w-screen flex flex-col select-none overflow-hidden">
 
       {/* ── Barre de titre ── */}
-      <header className="drag-region flex items-center h-10 bg-neutral-900 text-white flex-shrink-0">
+      <header data-tauri-drag-region className="drag-region flex items-center h-10 bg-neutral-900 text-white flex-shrink-0">
         {/* Logo + nom */}
         <div className="flex items-center gap-2 px-4 pointer-events-none">
           <Coffee className="h-4 w-4 text-neutral-400" />
@@ -32,7 +32,7 @@ export default function MainLayout() {
         </div>
 
         {/* Zone extensible (draggable) */}
-        <div className="flex-1" />
+        <div data-tauri-drag-region className="flex-1" />
 
         {/* Boutons fenêtre */}
         <div className="no-drag-region flex h-full">
