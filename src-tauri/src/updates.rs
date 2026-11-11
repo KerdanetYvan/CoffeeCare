@@ -1399,9 +1399,15 @@ mod tests {
         assert_eq!(events.len(), 4, "installing + error pour chaque paquet");
         assert!(events[0].contains("\"installing\"") && events[1].contains("\"error\""));
         assert!(events[1].contains("\"reason\""));
-        assert!(report.contains(
-            "✗ Faux programme (Zzz.PaquetInexistant.Test) — Échec : Programme non reconnu"
-        ));
+        // Le message exact dépend de la version de winget, de la langue et des sources de la
+        // machine (« Programme non reconnu » en local, message générique sur un serveur sans
+        // sources) : seul le fait que l'échec soit expliqué et rapporté compte ici. Les messages
+        // eux-mêmes sont testés dans diagnose.rs, sur des textes fixes.
+        assert!(report.contains("✗ Faux programme (Zzz.PaquetInexistant.Test) — Échec : "));
+        assert!(
+            !events[1].contains("winget"),
+            "pas de jargon dans le message affiché"
+        );
         assert!(
             report.contains("identifiant invalide"),
             "l'option piégée doit être refusée"
