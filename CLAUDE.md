@@ -78,6 +78,7 @@ src-tauri/
     repair.rs          # Services, fichiers système, périphériques, registre, démarrage, disques
     updates.rs         # Logiciels (winget), pilotes (Windows Update), rapports d'échec
     diagnose.rs        # Échecs d'installation : message simple + type (bouton à proposer)
+    report.rs          # Rapport de chaque session de mise à jour (versions avant / attendue / après)
     settings.rs        # Version, lancement avec Windows, ouverture d'un rapport
     hidden.rs          # Programmes masqués dans les mises à jour (hidden-updates.json)
     ps.rs              # PowerShell : normal, administrateur, résultat, échappement
@@ -177,6 +178,6 @@ Les messages d'échec des mises à jour viennent de `diagnose.rs` (un message en
 
 - **Icônes** : `src-tauri/icons/` contient les icônes par défaut de Tauri. À remplacer par le logo (`npx tauri icon logo.png`).
 - **Signature** : l'installeur n'est pas signé (avertissement SmartScreen).
-- **Dossier de données** : `%APPDATA%\fr.cleanerpc.desktop` (rapports d'échec dans `logs\`, programmes masqués dans `hidden-updates.json`). Changer l'identifiant dans `tauri.conf.json` déplace ce dossier.
+- **Dossier de données** : `%APPDATA%\fr.cleanerpc.desktop` (un rapport par session de mise à jour dans `logs\`, les 30 derniers sont conservés ; programmes masqués dans `hidden-updates.json`). Changer l'identifiant dans `tauri.conf.json` déplace ce dossier.
 - **Adaptateur supprimé** : les pages appellent `invoke()` directement (plus de `window.api`).
 - **Tests Rust sur la CI** : ils lancent de vraies analyses PowerShell. Si l'un d'eux dépend de la machine, le rendre tolérant.

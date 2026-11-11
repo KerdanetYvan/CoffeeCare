@@ -5,6 +5,7 @@
 //! Les rapports d'échec sont écrits dans `<données de l'app>\logs`.
 
 use crate::diagnose::{self, FailureKind, GENERIC_ERROR};
+use crate::report::{self, Entry, Outcome};
 use crate::{hidden, proc, ps};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -122,6 +123,21 @@ pub struct SoftwareUpdate {
     version_unknown: bool,
 }
 
+/// Position (en caractères) du début de chaque mot de l'en-tête d'un tableau.
+fn header_columns(header: &str) -> Vec<usize> {
+    let mut cols = Vec::new();
+    let mut in_word = false;
+    for (i, c) in header.chars().enumerate() {
+        if c.is_whitespace() {
+            in_word = false;
+        } else if !in_word {
+            cols.push(i);
+            in_word = true;
+        }
+    }
+    cols
+}
+
 /// Lit le tableau affiché par `winget upgrade` (colonnes à positions fixes). Ça marche
 /// en français comme en anglais, car on se repère aux positions et non aux titres.
 fn parse_winget_table(output: &str) -> Vec<SoftwareUpdate> {
@@ -141,18 +157,7 @@ fn parse_winget_table(output: &str) -> Vec<SoftwareUpdate> {
         return Vec::new();
     }
 
-    // Position (en caractères) du début de chaque mot de l'en-tête.
-    let header: Vec<char> = lines[sep - 1].chars().collect();
-    let mut cols: Vec<usize> = Vec::new();
-    let mut in_word = false;
-    for (i, c) in header.iter().enumerate() {
-        if c.is_whitespace() {
-            in_word = false;
-        } else if !in_word {
-            cols.push(i);
-            in_word = true;
-        }
-    }
+    let cols = header_columns(lines[sep - 1]);
     if cols.len() < 4 {
         return Vec::new();
     }
@@ -446,6 +451,9 @@ pub struct Package {
     /// Version installée avant la mise à jour, telle qu'affichée par l'analyse.
     #[serde(default, rename = "currentVersion")]
     current_version: Option<String>,
+    /// Version que l'analyse annonçait (pour le rapport).
+    #[serde(default, rename = "availableVersion")]
+    available_version: Option<String>,
 }
 
 /// Un identifiant est un seul mot, sans caractère de contrôle ni tiret initial (ce serait
@@ -532,17 +540,69 @@ fn verify_args(id: &str) -> [&str; 6] {
     ]
 }
 
+/// Ce que révèle la relecture d'un programme après une installation réussie.
+#[derive(Debug)]
+struct Verified {
+    result: Verification,
+    /// Version installée relue (même quand le programme est à jour).
+    installed: Option<String>,
+}
+
+/// Version installée d'un programme dans le tableau de `winget list` (avec ou sans colonne
+/// « Disponible »).
+fn installed_version(output: &str, id: &str) -> Option<String> {
+    let lines: Vec<&str> = output
+        .split(['\r', '\n'])
+        .filter(|l| !l.is_empty())
+        .collect();
+    let sep = lines.iter().position(|l| {
+        let t = l.trim();
+        t.len() >= 20 && t.chars().take(20).all(|c| c == '-')
+    })?;
+    if sep < 1 {
+        return None;
+    }
+    let cols = header_columns(lines[sep - 1]);
+    if cols.len() < 3 {
+        return None;
+    }
+    let cell = |chars: &[char], idx: usize| -> String {
+        let start = cols[idx].min(chars.len());
+        let end = cols
+            .get(idx + 1)
+            .map_or(chars.len(), |&e| e.min(chars.len()));
+        chars[start..end.max(start)]
+            .iter()
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
+    lines[sep + 1..]
+        .iter()
+        .find_map(|line| {
+            let chars: Vec<char> = line.chars().collect();
+            cell(&chars, 1)
+                .eq_ignore_ascii_case(id)
+                .then(|| cell(&chars, 2))
+        })
+        .filter(|v| !v.is_empty())
+}
+
 /// Relit l'état du programme après une installation réussie.
-fn verify_install(winget: &Path, id: &str, before: Option<&str>) -> Verification {
+fn verify_install(winget: &Path, id: &str, before: Option<&str>) -> Verified {
     match run_winget(winget, &verify_args(id), VERIFY_TIMEOUT) {
         Ok(run) => {
             let result = classify_verification(&run.stdout, id, before);
+            let installed = installed_version(&run.stdout, id);
             log::info!("[mises à jour] vérification de {id} : {result:?}");
-            result
+            Verified { result, installed }
         }
         Err(e) => {
             log::warn!("[mises à jour] vérification de {id} impossible : {e}");
-            Verification::Unverifiable
+            Verified {
+                result: Verification::Unverifiable,
+                installed: None,
+            }
         }
     }
 }
@@ -603,42 +663,9 @@ fn logs_dir(app: &AppHandle) -> Option<PathBuf> {
     Some(dir)
 }
 
-fn write_report(dir: Option<&Path>, lines: &[String]) -> Option<String> {
-    let file = dir?.join(format!(
-        "update-{}.log",
-        chrono::Local::now().format("%Y-%m-%dT%H-%M-%S")
-    ));
-    std::fs::write(
-        &file,
-        lines.join(
-            "
-",
-        ),
-    )
-    .ok()?;
-    log::info!("[mises à jour] rapport écrit : {}", file.display());
-    Some(file.to_string_lossy().into_owned())
-}
-
-fn report_header() -> String {
-    format!(
-        "=== Rapport de mise à jour — {} ===",
-        chrono::Local::now().format("%d/%m/%Y %H:%M:%S")
-    )
-}
-
-fn report_failure(name: &str, id: &str, label: &str, code: i64, output: &str) -> String {
-    let cleaned = clean_winget_output(output);
-    let body = if cleaned.is_empty() {
-        "  (aucune sortie capturée)".to_string()
-    } else {
-        cleaned
-            .iter()
-            .map(|l| format!("  {l}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    format!("✗ {name} ({id}) — {label} (code de sortie : {code})\n{body}")
+/// Date et heure affichées dans les rapports.
+fn now_label() -> String {
+    chrono::Local::now().format("%d/%m/%Y %H:%M:%S").to_string()
 }
 
 /// Avancement de l'installation d'un programme, envoyé à l'interface au fil de l'eau.
@@ -709,23 +736,13 @@ fn install_with(
     emit: &dyn Fn(Progress),
     report_dir: Option<&Path>,
 ) -> StreamResult {
-    let mut lines = vec![
-        report_header(),
-        format!(
-            "Gestionnaire : {}",
-            winget
-                .as_ref()
-                .map_or("introuvable".into(), |p| p.display().to_string())
-        ),
-        String::new(),
-    ];
-    // Le rapport est écrit dès qu'un programme a échoué ou n'est pas confirmé.
-    let mut needs_report = false;
+    let mut entries: Vec<Entry> = Vec::new();
 
     for Package {
         id,
         name,
         current_version,
+        available_version,
     } in packages
     {
         emit(Progress {
@@ -737,15 +754,27 @@ fn install_with(
             verification: None,
             slow: None,
         });
+        let mut entry = Entry {
+            name: name.clone(),
+            id: id.clone(),
+            before: current_version.clone(),
+            expected: available_version,
+            after: None,
+            outcome: Outcome::Unverifiable,
+        };
 
-        let Some(winget) = winget.as_ref().filter(|_| is_valid_package_id(&id)) else {
-            needs_report = true;
+        let Some(winget_path) = winget.as_deref().filter(|_| is_valid_package_id(&id)) else {
             let why = if winget.is_none() {
                 "gestionnaire introuvable"
             } else {
                 "identifiant invalide"
             };
-            lines.push(format!("✗ {name} ({id})\n  {why}\n"));
+            entry.outcome = Outcome::Failed {
+                message: GENERIC_ERROR.into(),
+                code: None,
+                detail: vec![why.into()],
+            };
+            entries.push(entry);
             emit(Progress {
                 id,
                 status: "error",
@@ -759,7 +788,7 @@ fn install_with(
         };
 
         let result = run_winget_watched(
-            winget,
+            winget_path,
             &install_args(&id),
             timings.timeout,
             Some(timings.slow_after),
@@ -793,25 +822,18 @@ fn install_with(
         if ok {
             // Après un redémarrage, la version n'est relue qu'au prochain lancement de Windows :
             // inutile de vérifier tout de suite.
-            let verification = match reboot {
-                None => Some(verify_install(winget, &id, current_version.as_deref())),
+            let verified = match reboot {
+                None => Some(verify_install(winget_path, &id, current_version.as_deref())),
                 Some(_) => None,
             };
-            let note = match (reboot, verification) {
-                (Some("system"), _) => " (redémarrage PC requis)",
-                (Some(_), _) => " (redémarrage logiciel requis)",
-                (None, Some(Verification::Confirmed)) => " (version confirmée)",
-                (None, Some(Verification::Unverifiable)) => " (non vérifiable)",
-                _ => "",
+            let verification = verified.as_ref().map(|v| v.result);
+            entry.after = verified.and_then(|v| v.installed);
+            entry.outcome = match (reboot, verification) {
+                (Some(restart), _) => Outcome::Restart(restart),
+                (None, Some(Verification::Confirmed)) => Outcome::Confirmed,
+                (None, Some(Verification::StillOutdated)) => Outcome::StillOutdated,
+                (None, _) => Outcome::Unverifiable,
             };
-            if verification == Some(Verification::StillOutdated) {
-                needs_report = true;
-                lines.push(format!(
-                    "⚠ {name} ({id}) — Installé, mais l'ancienne version est toujours détectée"
-                ));
-            } else {
-                lines.push(format!("✓ {name} ({id}) — Mis à jour{note}"));
-            }
             emit(Progress {
                 id,
                 status: "ok",
@@ -822,9 +844,12 @@ fn install_with(
                 slow: None,
             });
         } else {
-            needs_report = true;
-            lines.push(report_failure(&name, &id, "Échec", code, &captured));
             let diagnosis = diagnose::diagnose(&captured, code);
+            entry.outcome = Outcome::Failed {
+                message: diagnosis.message.clone(),
+                code: Some(code),
+                detail: clean_winget_output(&captured),
+            };
             emit(Progress {
                 id,
                 status: "error",
@@ -835,14 +860,24 @@ fn install_with(
                 slow: None,
             });
         }
+        entries.push(entry);
     }
 
+    if entries.is_empty() {
+        return StreamResult { log_file: None };
+    }
+    // Un rapport par session, réussites comme échecs : de quoi comparer avec l'analyse suivante.
+    let manager = winget
+        .as_ref()
+        .map_or("introuvable".to_string(), |p| p.display().to_string());
+    let text = report::build(
+        "Rapport de mise à jour",
+        &now_label(),
+        &entries,
+        Some(&manager),
+    );
     StreamResult {
-        log_file: if needs_report {
-            write_report(report_dir, &lines)
-        } else {
-            None
-        },
+        log_file: report::write(report_dir, &text),
     }
 }
 
@@ -905,6 +940,7 @@ fn install_elevated(app: &AppHandle, pkg: Package) -> ElevatedResult {
         id,
         name,
         current_version,
+        available_version,
     } = pkg;
 
     // Le script élevé écrit le code de sortie et la sortie dans un seul fichier JSON.
@@ -943,29 +979,52 @@ $code = $LASTEXITCODE
         "[mises à jour admin] {} {id} (code={code})\n{output}",
         if ok { "OK" } else { "ÉCHEC" }
     );
+
+    // Comme pour une session normale, le nouvel essai laisse un rapport, réussi ou non.
+    let dir = logs_dir(app);
+    let manager = winget.display().to_string();
+    let write_session = |entry: Entry| {
+        let text = report::build(
+            "Rapport de mise à jour (nouvel essai avec autorisation)",
+            &now_label(),
+            &[entry],
+            Some(&manager),
+        );
+        report::write(dir.as_deref(), &text)
+    };
+    let mut entry = Entry {
+        name: name.clone(),
+        id: id.clone(),
+        before: current_version.clone(),
+        expected: available_version,
+        after: None,
+        outcome: Outcome::Unverifiable,
+    };
+
     if ok {
         let reboot = detect_reboot(code, &output);
+        let verified = match reboot {
+            None => Some(verify_install(&winget, &id, current_version.as_deref())),
+            Some(_) => None,
+        };
+        let verification = verified.as_ref().map(|v| v.result);
+        entry.after = verified.and_then(|v| v.installed);
+        entry.outcome = match (reboot, verification) {
+            (Some(restart), _) => Outcome::Restart(restart),
+            (None, Some(Verification::Confirmed)) => Outcome::Confirmed,
+            (None, Some(Verification::StillOutdated)) => Outcome::StillOutdated,
+            (None, _) => Outcome::Unverifiable,
+        };
         return ElevatedResult {
             ok: true,
             reason: None,
             kind: None,
             reboot,
-            verification: match reboot {
-                None => Some(verify_install(&winget, &id, current_version.as_deref())),
-                Some(_) => None,
-            },
-            log_file: None,
+            verification,
+            log_file: write_session(entry),
         };
     }
 
-    let log_file = write_report(
-        logs_dir(app).as_deref(),
-        &[
-            report_header(),
-            String::new(),
-            report_failure(&name, &id, "Échec admin", code, &output),
-        ],
-    );
     // L'autorisation est déjà donnée : si le diagnostic parle encore d'autorisation, c'est que
     // l'installation a planté, le plus souvent parce que le programme est resté ouvert.
     let diagnosis = diagnose::diagnose(&output, code);
@@ -979,13 +1038,18 @@ $code = $LASTEXITCODE
     } else {
         (diagnosis.kind, diagnosis.message)
     };
+    entry.outcome = Outcome::Failed {
+        message: reason.clone(),
+        code: Some(code),
+        detail: clean_winget_output(&output),
+    };
     ElevatedResult {
         ok: false,
         reason: Some(reason),
         kind: Some(kind),
         reboot: None,
         verification: None,
-        log_file,
+        log_file: write_session(entry),
     }
 }
 
@@ -1305,11 +1369,13 @@ mod tests {
                     id: "Zzz.PaquetInexistant.Test".into(),
                     name: "Faux programme".into(),
                     current_version: None,
+                    available_version: None,
                 },
                 Package {
                     id: "--force".into(),
                     name: "Option piégée".into(),
                     current_version: None,
+                    available_version: None,
                 },
             ],
             &move |p| {
@@ -1333,7 +1399,9 @@ mod tests {
         assert_eq!(events.len(), 4, "installing + error pour chaque paquet");
         assert!(events[0].contains("\"installing\"") && events[1].contains("\"error\""));
         assert!(events[1].contains("\"reason\""));
-        assert!(report.contains("✗ Faux programme (Zzz.PaquetInexistant.Test)"));
+        assert!(report.contains(
+            "✗ Faux programme (Zzz.PaquetInexistant.Test) — Échec : Programme non reconnu"
+        ));
         assert!(
             report.contains("identifiant invalide"),
             "l'option piégée doit être refusée"
@@ -1410,6 +1478,32 @@ mod tests {
     }
 
     #[test]
+    fn installed_version_is_read_with_or_without_an_available_column() {
+        // Sans mise à jour en attente : pas de colonne « Disponible » (vraie sortie).
+        assert_eq!(
+            installed_version(&up_to_date_row(), "Git.Git").as_deref(),
+            Some("2.56.0.4")
+        );
+        assert_eq!(
+            installed_version(&up_to_date_row(), "git.git").as_deref(),
+            Some("2.56.0.4"),
+            "casse ignorée"
+        );
+        // Avec une mise à jour en attente : la colonne « Version » reste la version installée.
+        assert_eq!(
+            installed_version(&table(), "Git.Git").as_deref(),
+            Some("2.45.0")
+        );
+        // Programme absent, sortie vide ou texte seul.
+        assert_eq!(installed_version(&table(), "Autre.Programme"), None);
+        assert_eq!(installed_version("", "Git.Git"), None);
+        assert_eq!(
+            installed_version("Aucun package installé ne correspond.", "Git.Git"),
+            None
+        );
+    }
+
+    #[test]
     fn verification_never_installs() {
         let args = verify_args("Git.Git");
         assert_eq!(args[0], "list");
@@ -1450,14 +1544,21 @@ mod tests {
             std::env::temp_dir().join(format!("cleaner_pc_fake_{name}_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("winget.cmd");
-        std::fs::write(
-            &script,
+        let lines = [
+            "@echo off".to_string(),
             format!(
-                "@echo off\r\nif \"%1\"==\"upgrade\" ping -n {} {marker} >nul\r\nexit /b 0\r\n",
+                "if \"%1\"==\"upgrade\" ping -n {} {marker} >nul",
                 seconds + 1
             ),
-        )
-        .unwrap();
+            "if \"%1\"==\"list\" goto list".to_string(),
+            "exit /b 0".to_string(),
+            ":list".to_string(),
+            "echo Nom       ID             Version  Source".to_string(),
+            "echo ----------------------------------------".to_string(),
+            "echo Programme Test.Programme 2.0      winget".to_string(),
+            "exit /b 0".to_string(),
+        ];
+        std::fs::write(&script, lines.join("\r\n")).unwrap();
         script
     }
 
@@ -1472,6 +1573,7 @@ mod tests {
                 id: "Test.Programme".into(),
                 name: "Programme de test".into(),
                 current_version: Some("1.0".into()),
+                available_version: Some("2.0".into()),
             }],
             Some(winget.to_path_buf()),
             timings,
@@ -1506,9 +1608,21 @@ mod tests {
             "{events:?}"
         );
         assert!(
-            res.log_file.is_none(),
-            "aucun rapport pour une installation réussie"
+            events
+                .last()
+                .unwrap()
+                .contains("\"verification\":\"confirmed\""),
+            "{events:?}"
         );
+
+        // Une installation réussie laisse aussi un rapport, avec les trois versions.
+        let report =
+            std::fs::read_to_string(res.log_file.expect("un rapport même en cas de succès"))
+                .unwrap();
+        println!("{report}");
+        assert!(report.contains("✓ Programme de test (Test.Programme) — Mise à jour confirmée"));
+        assert!(report.contains("Version avant : 1.0 · attendue : 2.0 · relue après : 2.0"));
+        assert!(report.contains("Résumé : 1 mise à jour confirmée"));
         let _ = std::fs::remove_dir_all(fake.parent().unwrap());
     }
 

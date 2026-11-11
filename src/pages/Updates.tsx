@@ -130,7 +130,7 @@ export default function Updates() {
 
     const packages = swList
       .filter(p => selectedSw.has(p.id))
-      .map(p => ({ id: p.id, name: p.name, currentVersion: p.currentVersion }));
+      .map(p => ({ id: p.id, name: p.name, currentVersion: p.currentVersion, availableVersion: p.availableVersion }));
 
     setSwInstall('installing');
     setSwItemStatus(new Map());
@@ -371,8 +371,9 @@ export default function Updates() {
                                 onClick={async (e) => {
                                   e.stopPropagation();
                                   setSwItemStatus(prev => new Map(prev).set(pkg.id, { status: 'installing' }));
-                                  const result = await invoke<ElevatedInstallResult>('updates_install_elevated', { pkg: { id: pkg.id, name: pkg.name, currentVersion: pkg.currentVersion } });
-                                  if (result.logFile) setLogFile(result.logFile);
+                                  const result = await invoke<ElevatedInstallResult>('updates_install_elevated', { pkg: { id: pkg.id, name: pkg.name, currentVersion: pkg.currentVersion, availableVersion: pkg.availableVersion } });
+                                  // Un nouvel essai réussi laisse aussi un rapport, mais on garde le lien de la session principale.
+                                  if (result.logFile && !result.ok) setLogFile(result.logFile);
                                   setSwItemStatus(prev => new Map(prev).set(pkg.id, {
                                     status: result.ok ? 'ok' : 'error',
                                     reason: result.reason,
