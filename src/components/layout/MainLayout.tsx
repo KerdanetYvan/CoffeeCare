@@ -1,6 +1,9 @@
 ﻿import { useEffect, useState } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { NavLink, Outlet } from 'react-router-dom';
 import { Cpu, Wrench, Brush, RefreshCw, Settings, Minus, Square, X, Coffee } from 'lucide-react';
+
+const appWindow = getCurrentWindow();
 
 const nav = [
   { to: '/',          label: 'Dashboard',    icon: Cpu      },
@@ -14,7 +17,7 @@ export default function MainLayout() {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
-    const check = async () => setMaximized(await window.api.isMaximized());
+    const check = async () => setMaximized(await appWindow.isMaximized());
     check();
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
@@ -37,21 +40,21 @@ export default function MainLayout() {
         {/* Boutons fenêtre */}
         <div className="no-drag-region flex h-full">
           <button
-            onClick={() => window.api.minimizeWindow()}
+            onClick={() => appWindow.minimize()}
             className="flex items-center justify-center w-11 h-full hover:bg-neutral-700 transition-colors"
             aria-label="Réduire"
           >
             <Minus className="h-3.5 w-3.5" />
           </button>
           <button
-            onClick={() => window.api.maximizeWindow()}
+            onClick={() => appWindow.toggleMaximize()}
             className="flex items-center justify-center w-11 h-full hover:bg-neutral-700 transition-colors"
             aria-label={maximized ? 'Restaurer' : 'Agrandir'}
           >
             <Square className="h-3 w-3" />
           </button>
           <button
-            onClick={() => window.api.closeWindow()}
+            onClick={() => appWindow.close()}
             className="flex items-center justify-center w-11 h-full hover:bg-red-500 transition-colors"
             aria-label="Fermer"
           >

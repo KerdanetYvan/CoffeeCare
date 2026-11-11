@@ -1,6 +1,7 @@
 ﻿import { useState } from 'react';
 import { ScanSearch, Wrench, CheckCircle, XCircle, AlertCircle, ChevronDown, ChevronUp, ShieldCheck, Clock, Cpu, Database, Rocket, HardDrive } from 'lucide-react';
-import type { ServiceInfo, RepairResult, SFCResult, DriverError, DriverErrorScanResult, RegistryIssue, RegistryScanResult, StartupItem, StartupScanResult, StartupChange, DiskDevice } from '../types/electron-api';
+import { invoke } from '@tauri-apps/api/core';
+import type { ServiceInfo, ServiceScanResult, RepairResult, SFCResult, DriverError, DriverErrorScanResult, RegistryIssue, RegistryScanResult, StartupItem, StartupScanResult, StartupChange, DiskDevice, DiskHealthResult, Ack } from '../types/commands';
 
 // ── Types locaux ──────────────────────────────────────────────────────────────
 
@@ -122,7 +123,7 @@ export default function Repair() {
     setFixPhase('idle');
     setFixResult(null);
     setShowAll(false);
-    const res = await window.api.getServices();
+    const res = await invoke<ServiceScanResult>('repair_get_services');
     setServices(res.data);
     setSvcError(res.ok ? null : (res.error ?? 'Erreur inconnue'));
     setSvcPhase('results');
@@ -132,7 +133,7 @@ export default function Repair() {
     const toFix = services.filter(s => s.hasIssue).map(s => s.name);
     if (toFix.length === 0) return;
     setFixPhase('fixing');
-    const result = await window.api.fixServices(toFix);
+    const result = await invoke<RepairResult>('repair_fix_services', { names: toFix });
     setFixResult(result);
     setFixPhase('done');
   };
@@ -140,7 +141,7 @@ export default function Repair() {
   const runSFC = async () => {
     setSfcPhase('running');
     setSfcResult(null);
-    const result = await window.api.runSFC();
+    const result = await invoke<SFCResult>('repair_run_sfc');
     setSfcResult(result);
     setSfcPhase('done');
   };
@@ -150,7 +151,7 @@ export default function Repair() {
     setDrvError(null);
     setDrvFixPhase('idle');
     setDrvResult(null);
-    const res: DriverErrorScanResult = await window.api.getDriverErrors();
+    const res: DriverErrorScanResult = await invoke<DriverErrorScanResult>('repair_get_driver_errors');
     setDrivers(res.data);
     setDrvError(res.ok ? null : (res.error ?? 'Erreur inconnue'));
     setDrvPhase('results');
@@ -160,7 +161,7 @@ export default function Repair() {
     const ids = drivers.map(d => d.instanceId);
     if (ids.length === 0) return;
     setDrvFixPhase('fixing');
-    const result = await window.api.fixDriverErrors(ids);
+    const result = await invoke<RepairResult>('repair_fix_driver_errors', { ids });
     setDrvResult(result);
     setDrvFixPhase('done');
   };
@@ -170,7 +171,7 @@ export default function Repair() {
     setStpError(null);
     setStpApplying(false);
     setStpApplied(false);
-    const res: StartupScanResult = await window.api.getStartupItems();
+    const res: StartupScanResult = await invoke<StartupScanResult>('repair_get_startup_items');
     setStpOriginal(res.data);
     setStpItems(res.data.map(i => ({ ...i })));
     setStpError(res.ok ? null : (res.error ?? 'Erreur inconnue'));
@@ -192,7 +193,7 @@ export default function Repair() {
 
     if (changes.length === 0) return;
     setStpApplying(true);
-    const res = await window.api.setStartupItems(changes);
+    const res = await invoke<Ack>('repair_set_startup_items', { changes });
     setStpApplying(false);
     if (res.ok) {
       setStpOriginal(stpItems.map(i => ({ ...i })));
@@ -209,7 +210,7 @@ export default function Repair() {
     setDiskPhase('scanning');
     setDiskError(null);
     setDiskScheduled(false);
-    const res = await window.api.getDiskHealth();
+    const res = await invoke<DiskHealthResult>('repair_get_disk_health');
     setDiskDevices(res.disks);
     setDiskError(res.ok ? null : (res.error ?? 'Erreur inconnue'));
     setDiskPhase('results');
@@ -221,7 +222,7 @@ export default function Repair() {
       .flatMap(d => d.volumes.map(v => v.letter));
     const toSchedule = letters.length > 0 ? letters : ['C'];
     setDiskScheduling(true);
-    const res = await window.api.scheduleDiskCheck(toSchedule);
+    const res = await invoke<Ack>('repair_schedule_disk_check', { letters: toSchedule });
     setDiskScheduling(false);
     setDiskScheduled(res.ok);
   };
@@ -243,7 +244,7 @@ export default function Repair() {
     setRegError(null);
     setRegFixPhase('idle');
     setRegResult(null);
-    const res: RegistryScanResult = await window.api.getRegistryIssues();
+    const res: RegistryScanResult = await invoke<RegistryScanResult>('repair_get_registry_issues');
     setRegIssues(res.data);
     setRegError(res.ok ? null : (res.error ?? 'Erreur inconnue'));
     setRegPhase('results');
@@ -253,7 +254,7 @@ export default function Repair() {
     const paths = regIssues.map(r => r.registryPath);
     if (paths.length === 0) return;
     setRegFixPhase('fixing');
-    const result = await window.api.fixRegistryIssues(paths);
+    const result = await invoke<RepairResult>('repair_fix_registry_issues', { paths });
     setRegResult(result);
     setRegFixPhase('done');
   };

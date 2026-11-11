@@ -1,5 +1,6 @@
 ﻿import { useEffect, useState } from "react";
-import type { SystemInfo, StatPoint } from '../types/electron-api';
+import { invoke } from '@tauri-apps/api/core';
+import type { SystemInfo, StatPoint } from '../types/commands';
 
 function SparkLine({ points, color }: { points: number[], color: string }) {
   if (points.length < 2) return null;
@@ -36,7 +37,7 @@ export default function Dashboard() {
   const loadSystemInfo = async (showSpinner = false) => {
     try {
       if (showSpinner) setLoading(true);
-      const info = await window.api.getSystemInfo();
+      const info = await invoke<SystemInfo>('system_get_info');
       setSystemInfo(info);
     } catch (error) {
       console.error("Erreur lors du chargement des infos système:", error);

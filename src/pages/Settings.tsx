@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import type { SettingsInfo } from '../types/commands';
 import { Moon, Rocket, Info, Sparkles, Globe, Clock, BarChart2, ExternalLink } from 'lucide-react';
 
 function SectionDivider() {
@@ -49,7 +51,7 @@ export default function Settings() {
   const [toggling,    setToggling]    = useState(false);
 
   useEffect(() => {
-    window.api.getSettingsInfo().then(info => {
+    invoke<SettingsInfo>('settings_get_info').then(info => {
       setVersion(info.version);
       setOpenAtLogin(info.openAtLogin);
     });
@@ -58,7 +60,7 @@ export default function Settings() {
   const handleLoginItem = async (v: boolean) => {
     setToggling(true);
     setOpenAtLogin(v);
-    await window.api.setLoginItem(v);
+    await invoke('settings_set_login_item', { openAtLogin: v });
     setToggling(false);
   };
 

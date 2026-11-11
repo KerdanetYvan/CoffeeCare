@@ -1,6 +1,7 @@
 ﻿import { useState } from 'react';
 import { ShieldAlert, Trash2, ScanSearch, CheckSquare, Square, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
-import type { TempDir, CleanResult, DirCleanResult } from '../types/electron-api';
+import { invoke } from '@tauri-apps/api/core';
+import type { TempDir, CleanResult, DirCleanResult, ScanResult } from '../types/commands';
 
 type Phase = 'idle' | 'scanning' | 'results' | 'cleaning' | 'done';
 
@@ -27,7 +28,7 @@ export default function Cleaning() {
     setCleanResult(null);
     setRunningApps([]);
 
-    const res = await window.api.getTempDirs();
+    const res = await invoke<ScanResult>('scan_get_temp_dirs');
     const found = res.data.filter(d => d.fileCount > 0);
 
     setDirs(found);
@@ -80,7 +81,7 @@ export default function Cleaning() {
     const hasAdmin = dirs.some(d => d.requiresAdmin && selected.has(d.path));
     if (hasAdmin) await new Promise(r => setTimeout(r, 100));
 
-    const result = await window.api.deleteDirs(paths);
+    const result = await invoke<CleanResult>('clean_delete_dirs', { paths });
     setCleanResult(result);
     setPhase('done');
   };

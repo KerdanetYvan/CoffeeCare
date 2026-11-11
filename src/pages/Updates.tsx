@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ScanSearch, Download, CheckSquare, Square, Package, Cpu, AlertCircle, CheckCircle2, XCircle, RefreshCw, Power } from 'lucide-react';
-import type { SoftwareUpdate, DriverUpdate, InstallResult } from '../types/electron-api';
+import { Channel, invoke } from '@tauri-apps/api/core';
+import type { SoftwareUpdate, DriverUpdate, InstallResult, UpdatesListResult, SwProgress, StreamResult, ElevatedInstallResult, CloseAppResult } from '../types/commands';
 
 type PagePhase    = 'idle' | 'scanning' | 'results';
 type InstallPhase = 'idle' | 'installing' | 'done';
@@ -30,7 +31,6 @@ export default function Updates() {
   const [drResult,  setDrResult]  = useState<InstallResult | null>(null);
 
   const scan = async () => {
-    window.api.offSwProgress();
     setPage('scanning');
     setSwError(null);
     setDrError(null);
@@ -41,8 +41,8 @@ export default function Updates() {
     setDrResult(null);
 
     const [sw, dr] = await Promise.all([
-      window.api.getSoftwareUpdates(),
-      window.api.getDriverUpdates(),
+      invoke<UpdatesListResult<SoftwareUpdate>>('updates_get_software'),
+      invoke<UpdatesListResult<DriverUpdate>>('updates_get_drivers'),
     ]);
 
     setSwList(sw.data);
@@ -80,13 +80,13 @@ export default function Updates() {
     setSwItemStatus(new Map());
     setLogFile(null);
 
-    window.api.onSwProgress(({ id, status, reason, reboot }) => {
+    const onProgress = new Channel<SwProgress>();
+    onProgress.onmessage = ({ id, status, reason, reboot }) => {
       setSwItemStatus(prev => new Map(prev).set(id, { status, reason, reboot }));
-    });
+    };
 
-    const result = await window.api.installSoftwareStream(packages);
+    const result = await invoke<StreamResult>('updates_install_software_stream', { packages, onProgress });
 
-    window.api.offSwProgress();
     setLogFile(result?.logFile ?? null);
     setSwInstall('done');
   };
@@ -99,7 +99,7 @@ export default function Updates() {
       return next;
     });
 
-    const result = await window.api.closeRelatedApp({ name: pkg.name });
+    const result = await invoke<CloseAppResult>('updates_close_related_app', { pkg: { name: pkg.name } });
     const closeMsg = result.ok
       ? `${result.processName} fermé — relancez la mise à jour pour réessayer`
       : result.reason === 'ambiguous'
@@ -118,7 +118,7 @@ export default function Updates() {
 
   const installDrivers = async () => {
     setDrInstall('installing');
-    const result = await window.api.installDrivers();
+    const result = await invoke<InstallResult>('updates_install_drivers');
     setDrResult(result);
     setDrInstall('done');
   };
@@ -282,7 +282,7 @@ export default function Updates() {
                                 onClick={async (e) => {
                                   e.stopPropagation();
                                   setSwItemStatus(prev => new Map(prev).set(pkg.id, { status: 'installing' }));
-                                  const result = await window.api.installElevated({ id: pkg.id, name: pkg.name });
+                                  const result = await invoke<ElevatedInstallResult>('updates_install_elevated', { pkg: { id: pkg.id, name: pkg.name } });
                                   if (result.logFile) setLogFile(result.logFile);
                                   setSwItemStatus(prev => new Map(prev).set(pkg.id, {
                                     status: result.ok ? 'ok' : 'error',
@@ -358,7 +358,7 @@ export default function Updates() {
                       </p>
                       {logFile && (
                         <button
-                          onClick={() => window.api.openLogFile(logFile)}
+                          onClick={() => invoke('shell_open_log', { path: logFile })}
                           className="text-sm text-neutral-500 underline underline-offset-2 hover:text-neutral-900 transition-colors"
                         >
                           Voir le rapport d'erreur

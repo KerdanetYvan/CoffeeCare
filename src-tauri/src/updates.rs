@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::ipc::Channel;
+use tauri::{AppHandle, Manager};
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(60);
 const SOURCE_UPDATE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -508,8 +509,9 @@ fn report_failure(name: &str, id: &str, label: &str, code: i64, output: &str) ->
     format!("✗ {name} ({id}) — {label} (code de sortie : {code})\n{body}")
 }
 
+/// Avancement de l'installation d'un programme, envoyé à l'interface au fil de l'eau.
 #[derive(Serialize, Clone)]
-struct Progress {
+pub struct Progress {
     id: String,
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -625,13 +627,14 @@ fn install_software_stream(
 pub async fn updates_install_software_stream(
     app: AppHandle,
     packages: Vec<Package>,
+    on_progress: Channel<Progress>,
 ) -> Result<StreamResult, String> {
     blocking(move || {
         let dir = logs_dir(&app);
         install_software_stream(
             packages,
             &|p| {
-                let _ = app.emit("updates:swProgress", p);
+                let _ = on_progress.send(p);
             },
             dir.as_deref(),
         )
